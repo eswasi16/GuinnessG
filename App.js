@@ -1,21 +1,29 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, TouchableOpacity, Image, StyleSheet,
-  ScrollView, ActivityIndicator, Alert, TextInput, Modal
+  ScrollView, ActivityIndicator, Alert, TextInput, Modal, SafeAreaView, FlatList
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
 
 const API_BASE = 'https://guinness-g-api-production.up.railway.app';
 const API_URL = `${API_BASE}/analyze`;
 
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
+
 // --- Star Rating Component ---
 const StarRating = ({ rating, onRate, size = 28 }) => (
   <View style={{ flexDirection: 'row', gap: 6, marginVertical: 6 }}>
     {[1, 2, 3, 4, 5].map(star => (
-      <TouchableOpacity key={star} onPress={() => onRate && onRate(star)}
-        disabled={!onRate}>
+      <TouchableOpacity key={star} onPress={() => onRate && onRate(star)} disabled={!onRate}>
         <Text style={{ fontSize: size, opacity: star <= rating ? 1 : 0.25 }}>⭐</Text>
       </TouchableOpacity>
     ))}
@@ -38,7 +46,7 @@ const GVisualIndicator = ({ gMidpointPct, beerLinePct }) => {
         <View style={[indicator.perfectZone, { top: gPos - 4, height: 8 }]} />
         <View style={[indicator.midLine, { top: gPos }]} />
         <View style={[indicator.beerLine, { top: beerPos }]}>
-          <Text style={indicator.beerLabel}>🍺 beer line</Text>
+          <Text style={indicator.beerLabel}>beer line</Text>
         </View>
       </View>
       <Text style={indicator.label}>Glass Bottom</Text>
@@ -62,13 +70,36 @@ const GVisualIndicator = ({ gMidpointPct, beerLinePct }) => {
 
 // --- Rank Badge ---
 const RankBadge = ({ index }) => {
-  const labels = ['🥇', '🥈', '🥉'];
+  const labels = ['1', '2', '3'];
   const label = index < 3 ? labels[index] : `#${index + 1}`;
   const color = index === 0 ? '#FDB913' : index === 1 ? '#ccc' : index === 2 ? '#cd7f32' : '#888';
   return (
-    <Text style={{ fontSize: index < 3 ? 22 : 14, color, width: 36, textAlign: 'center' }}>
+    <Text style={{ fontSize: index < 3 ? 18 : 14, color, fontWeight: 'bold', width: 36, textAlign: 'center' }}>
       {label}
     </Text>
+  );
+};
+
+// --- Bottom Tab Bar ---
+const BottomTabBar = ({ activeTab, onTabPress }) => {
+  const tabs = [
+    { key: 'camera',      label: 'Pour'    },
+    { key: 'bars',        label: 'Bars'    },
+    { key: 'friends',     label: 'Friends' },
+    { key: 'profile',     label: 'Me'      },
+    { key: 'leaderboard', label: 'Board'   },
+  ];
+  return (
+    <View style={bottomNav.container}>
+      {tabs.map(tab => (
+        <TouchableOpacity key={tab.key} style={bottomNav.tab} onPress={() => onTabPress(tab.key)}>
+          <Text style={[bottomNav.label, activeTab === tab.key && bottomNav.labelActive]}>
+            {tab.label}
+          </Text>
+          {activeTab === tab.key && <View style={bottomNav.indicator} />}
+        </TouchableOpacity>
+      ))}
+    </View>
   );
 };
 
@@ -89,12 +120,22 @@ export default function App() {
   const [bars, setBars] = useState([]);
   const [activeTab, setActiveTab] = useState('camera');
 
-  // Pour flow state
-  const [pourStep, setPourStep] = useState('idle'); // idle | fresh | rating | sip | result
+  // Pour flow
+  const [pourStep, setPourStep] = useState('idle');
   const [showBarModal, setShowBarModal] = useState(false);
   const [barName, setBarName] = useState('');
   const [barRating, setBarRating] = useState(0);
-  const [pendingScore, setPendingScore] = useState(null);
+  const [barSuggestions, setBarSuggestions] = useState([]);
+
+  // Friends
+  const [friendFeed, setFriendFeed] = useState([]);
+  const [friends, setFriends] = useState({ following: [], followers: [] });
+  const [userSearch, setUserSearch] = useState('');
+  const [userResults, setUserResults] = useState([]);
+  const [friendsLoading, setFriendsLoading] = useState(false);
+
+  const notificationListener = useRef();
+  const responseListener = useRef();
 
   useEffect(() => {
     AsyncStorage.getItem('username').then(u => {
@@ -103,9 +144,30 @@ export default function App() {
         loadProfile(u);
         loadProfilePours(u);
         setScreen('main');
+        registerPushToken(u);
       }
     });
+
+    notificationListener.current = Notifications.addNotificationReceivedListener(() => {});
+    responseListener.current = Notifications.addNotificationResponseReceivedListener(() => {});
+    return () => {
+      Notifications.removeNotificationSubscription(notificationListener.current);
+      Notifications.removeNotificationSubscription(responseListener.current);
+    };
   }, []);
+
+  const registerPushToken = async (name) => {
+    try {
+      const { status } = await Notifications.requestPermissionsAsync();
+      if (status !== 'granted') return;
+      const tokenData = await Notifications.getExpoPushTokenAsync();
+      await axios.post(`${API_BASE}/profile/${name}/push-token`, {
+        token: tokenData.data
+      });
+    } catch (e) {
+      console.log('Push token registration failed:', e);
+    }
+  };
 
   const loadProfile = async (name) => {
     try {
@@ -119,6 +181,53 @@ export default function App() {
       const { data } = await axios.get(`${API_BASE}/profile/${name}/pours`);
       setProfilePours(data);
     } catch (e) { console.log('Profile pours load failed:', e); }
+  };
+
+  const loadFriends = async (name) => {
+    try {
+      const { data } = await axios.get(`${API_BASE}/friends/${name}`);
+      setFriends(data);
+    } catch (e) { console.log('Friends load failed:', e); }
+  };
+
+  const loadFriendFeed = async (name) => {
+    try {
+      const { data } = await axios.get(`${API_BASE}/friends/${name}/feed`);
+      setFriendFeed(data);
+    } catch (e) { console.log('Feed load failed:', e); }
+  };
+
+  const searchUsers = async (q) => {
+    setUserSearch(q);
+    if (!q.trim()) { setUserResults([]); return; }
+    try {
+      const { data } = await axios.get(`${API_BASE}/friends/${username}/search?q=${q}`);
+      setUserResults(data);
+    } catch (e) { console.log('User search failed:', e); }
+  };
+
+  const handleFollow = async (target) => {
+    setFriendsLoading(true);
+    try {
+      await axios.post(`${API_BASE}/friends/follow`, {
+        follower: username, following: target
+      });
+      await loadFriends(username);
+      await loadFriendFeed(username);
+    } catch (e) { console.log('Follow failed:', e); }
+    setFriendsLoading(false);
+  };
+
+  const handleUnfollow = async (target) => {
+    setFriendsLoading(true);
+    try {
+      await axios.post(`${API_BASE}/friends/unfollow`, {
+        follower: username, following: target
+      });
+      await loadFriends(username);
+      await loadFriendFeed(username);
+    } catch (e) { console.log('Unfollow failed:', e); }
+    setFriendsLoading(false);
   };
 
   const handleLogin = async () => {
@@ -137,7 +246,10 @@ export default function App() {
       await loadHistory(name);
       await fetchLeaderboard();
       await fetchBars();
-      Alert.alert(data.status === 'created' ? '👋 Welcome!' : '🍺 Welcome Back!', data.message);
+      await loadFriends(name);
+      await loadFriendFeed(name);
+      registerPushToken(name);
+      Alert.alert(data.status === 'created' ? 'Welcome!' : 'Welcome Back!', data.message);
       setScreen('main');
     } catch (e) {
       Alert.alert('Error', 'Could not connect to server.');
@@ -154,7 +266,8 @@ export default function App() {
           setUsername(''); setProfile(null); setProfilePours([]);
           setHistory([]); setResult(null); setImage(null);
           setFreshPhotoUri(null); setUsernameInput('');
-          setPourStep('idle'); setScreen('login');
+          setPourStep('idle'); setFriendFeed([]); setFriends({ following: [], followers: [] });
+          setScreen('login');
         }
       }
     ]);
@@ -200,6 +313,15 @@ export default function App() {
     } catch (e) { console.log('Bars fetch failed:', e); }
   };
 
+  const searchBars = async (q) => {
+    setBarName(q);
+    if (!q.trim()) { setBarSuggestions([]); return; }
+    try {
+      const { data } = await axios.get(`${API_BASE}/bars/search?q=${q}`);
+      setBarSuggestions(data);
+    } catch (e) { console.log('Bar search failed:', e); }
+  };
+
   const clearHistory = async () => {
     Alert.alert('Clear History', 'Are you sure?', [
       { text: 'Cancel' },
@@ -218,7 +340,6 @@ export default function App() {
        history.filter(h => h.score != null).length).toFixed(1)
     : null;
 
-  // ── STEP 1: Take fresh pint photo ──
   const startNewPour = async () => {
     try {
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
@@ -227,9 +348,7 @@ export default function App() {
         return;
       }
       setPourStep('fresh');
-      const pic = await ImagePicker.launchCameraAsync({
-        mediaTypes: ['images'], quality: 0.8,
-      });
+      const pic = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.8 });
       if (!pic.canceled) {
         const uri = pic.assets[0].uri;
         setFreshPhotoUri(uri);
@@ -237,6 +356,7 @@ export default function App() {
         setResult(null);
         setBarName('');
         setBarRating(0);
+        setBarSuggestions([]);
         setPourStep('rating');
         setShowBarModal(true);
       } else {
@@ -248,13 +368,13 @@ export default function App() {
     }
   };
 
-  // ── STEP 2: Bar modal submit ──
   const handleBarSubmit = () => {
     if (!barName.trim()) { Alert.alert('Bar Name Required', 'Enter the bar name!'); return; }
     if (barRating === 0) { Alert.alert('Rating Required', 'Please rate your Guinness!'); return; }
     setShowBarModal(false);
+    setBarSuggestions([]);
     Alert.alert(
-      '📏 Measure Your Split?',
+      'Measure Your Split?',
       'Take a sip then photograph the glass to measure your Split the G score.',
       [
         { text: 'Skip for now', onPress: () => handleSaveWithoutScore() },
@@ -263,42 +383,47 @@ export default function App() {
     );
   };
 
+
   const handleBarSkip = () => {
     setShowBarModal(false);
+    setBarSuggestions([]);
     handleSaveWithoutScore();
   };
 
-  // ── STEP 3A: Save without G score ──
   const handleSaveWithoutScore = async () => {
     await saveScore(null, 'No G score recorded', barName.trim(), barRating, freshPhotoUri);
     setPourStep('idle');
   };
 
-  // ── STEP 3B: Take sip photo and analyze ──
   const takeSipPhoto = async () => {
     try {
       setPourStep('sip');
-      const pic = await ImagePicker.launchCameraAsync({
-        mediaTypes: ['images'], quality: 0.8,
-      });
+      const pic = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.8 });
       if (!pic.canceled) {
         const uri = pic.assets[0].uri;
         setImage(uri);
         setLoading(true);
         setPourStep('result');
-
         const formData = new FormData();
         formData.append('file', { uri, name: 'pint.jpg', type: 'image/jpeg' });
-
         try {
           const { data } = await axios.post(API_URL, formData, {
             headers: { 'Content-Type': 'multipart/form-data' },
           });
           setResult(data);
           if (data.glass_detected && data.g_detected && data.beer_present) {
-            await saveScore(
-              data.distance_cm, data.description,
-              barName.trim(), barRating, freshPhotoUri
+            await saveScore(data.distance_cm, data.description, barName.trim(), barRating, freshPhotoUri);
+          } else {
+            // Not a valid Guinness — clear the fresh photo and reset so nothing gets saved
+            Alert.alert(
+              'Not a valid Guinness',
+              'We could not detect a proper Guinness glass. This pour will not be saved.',
+              [{ text: 'OK', onPress: () => {
+                setPourStep('idle');
+                setResult(null);
+                setImage(null);
+                setFreshPhotoUri(null);
+              }}]
             );
           }
         } catch (e) {
@@ -314,11 +439,19 @@ export default function App() {
     }
   };
 
+  const handleTabPress = (key) => {
+    setActiveTab(key);
+    if (key === 'leaderboard') fetchLeaderboard();
+    if (key === 'bars') fetchBars();
+    if (key === 'profile') { loadProfile(username); loadProfilePours(username); }
+    if (key === 'friends') { loadFriends(username); loadFriendFeed(username); }
+  };
+
   // --- Login Screen ---
   if (screen === 'login') {
     return (
       <View style={styles.loginContainer}>
-        <Text style={styles.title}>🍺 Split the G</Text>
+        <Text style={styles.title}>Split the G</Text>
         <Text style={styles.loginSubtitle}>
           Track your pours, rate your pints, and compete with friends
         </Text>
@@ -338,7 +471,7 @@ export default function App() {
           onPress={handleLogin}>
           {profileLoading
             ? <ActivityIndicator color="#000" />
-            : <Text style={styles.buttonText}>Let's Pour 🍺</Text>}
+            : <Text style={styles.buttonText}>Let's Pour</Text>}
         </TouchableOpacity>
         <Text style={styles.loginNote}>No password needed — just pick a unique name!</Text>
       </View>
@@ -347,50 +480,55 @@ export default function App() {
 
   // --- Main App ---
   return (
-    <View style={{ flex: 1, backgroundColor: '#0a0a0a' }}>
-
+    <SafeAreaView style={{ flex: 1, backgroundColor: '#0a0a0a' }}>
       {/* Bar Rating Modal */}
       <Modal visible={showBarModal} transparent animationType="slide"
         onRequestClose={() => setShowBarModal(false)}>
         <View style={modal.overlay}>
           <View style={modal.sheet}>
-            <Text style={modal.title}>🍺 How was that pint?</Text>
+            <Text style={modal.title}>How was that pint?</Text>
             <Text style={modal.subtitle}>Tag the bar and rate your Guinness</Text>
-
-            {/* Fresh photo preview */}
             {freshPhotoUri && (
               <Image source={{ uri: freshPhotoUri }} style={modal.preview} />
             )}
-
             <Text style={modal.label}>Bar Name</Text>
             <TextInput
               style={styles.input}
               placeholder="e.g. The Dead Rabbit, Mulligan's..."
               placeholderTextColor="#555"
               value={barName}
-              onChangeText={setBarName}
+              onChangeText={searchBars}
               autoCapitalize="words"
             />
-
+            {/* Bar autocomplete suggestions */}
+            {barSuggestions.length > 0 && (
+              <View style={styles.suggestionsBox}>
+                {barSuggestions.map((s, i) => (
+                  <TouchableOpacity
+                    key={i}
+                    style={styles.suggestionItem}
+                    onPress={() => { setBarName(s); setBarSuggestions([]); }}>
+                    <Text style={styles.suggestionText}>{s}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
             <Text style={modal.label}>Your Rating</Text>
             <StarRating rating={barRating} onRate={setBarRating} />
-
             {barRating > 0 && (
               <Text style={modal.ratingDesc}>
-                {barRating === 1 ? '😬 Terrible pint' :
-                 barRating === 2 ? '😐 Below average' :
-                 barRating === 3 ? '👍 Decent pint' :
-                 barRating === 4 ? '😎 Great pint!' :
-                 '🎯 Perfect pint!'}
+                {barRating === 1 ? 'Terrible pint' :
+                 barRating === 2 ? 'Below average' :
+                 barRating === 3 ? 'Decent pint' :
+                 barRating === 4 ? 'Great pint!' :
+                 'Perfect pint!'}
               </Text>
             )}
-
             <TouchableOpacity
               style={[styles.button, { width: '100%', alignItems: 'center', marginTop: 16 }]}
               onPress={handleBarSubmit}>
-              <Text style={styles.buttonText}>Next →</Text>
+              <Text style={styles.buttonText}>Next</Text>
             </TouchableOpacity>
-
             <TouchableOpacity style={modal.skipBtn} onPress={handleBarSkip}>
               <Text style={modal.skipText}>Skip for now</Text>
             </TouchableOpacity>
@@ -399,60 +537,26 @@ export default function App() {
       </Modal>
 
       <ScrollView contentContainerStyle={styles.content}>
-
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.title}>🍺 Split the G</Text>
-          <TouchableOpacity onPress={handleLogout}>
-            <Text style={styles.logoutBtn}>Log Out</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Tab Bar */}
-        <View style={styles.tabBar}>
-          {[
-            { key: 'camera', label: '📸 Pour' },
-            { key: 'bars',   label: '🍻 Bars' },
-            { key: 'profile', label: '👤 Me' },
-            { key: 'leaderboard', label: '🏆 Board' },
-          ].map(tab => (
-            <TouchableOpacity
-              key={tab.key}
-              style={[styles.tab, activeTab === tab.key && styles.activeTab]}
-              onPress={() => {
-                setActiveTab(tab.key);
-                if (tab.key === 'leaderboard') fetchLeaderboard();
-                if (tab.key === 'bars') fetchBars();
-                if (tab.key === 'profile') {
-                  loadProfile(username);
-                  loadProfilePours(username);
-                }
-              }}>
-              <Text style={styles.tabText}>{tab.label}</Text>
-            </TouchableOpacity>
-          ))}
+          <Text style={styles.title}>Split the G</Text>
         </View>
 
         {/* ── POUR TAB ── */}
         {activeTab === 'camera' && (
           <>
-            <Text style={styles.greeting}>Hey {username} 👋</Text>
-
+            <Text style={styles.greeting}>Hey {username}</Text>
             {average && (
               <View style={styles.avgBox}>
                 <Text style={styles.avgLabel}>YOUR AVERAGE G SCORE</Text>
                 <Text style={styles.avgValue}>{average}cm off perfect</Text>
               </View>
             )}
-
-            {/* New Pint Button */}
             {pourStep === 'idle' && (
               <TouchableOpacity style={styles.button} onPress={startNewPour}>
-                <Text style={styles.buttonText}>📸 New Pint</Text>
+                <Text style={styles.buttonText}>New Pint</Text>
               </TouchableOpacity>
             )}
-
-            {/* Step indicators */}
             {pourStep === 'fresh' && (
               <View style={styles.stepBox}>
                 <ActivityIndicator color="#FDB913" />
@@ -465,52 +569,44 @@ export default function App() {
                 <Text style={styles.stepText}>Step 3: Take your sip photo...</Text>
               </View>
             )}
-
             {loading && (
               <View style={styles.loadingBox}>
                 <ActivityIndicator size="large" color="#FDB913" />
                 <Text style={styles.loadingText}>Analyzing your split...</Text>
               </View>
             )}
-
-            {/* Fresh photo preview */}
             {freshPhotoUri && pourStep === 'result' && (
               <View style={styles.photoRow}>
                 <View style={styles.photoCard}>
-                  <Text style={styles.photoLabel}>Fresh Pint 📷</Text>
+                  <Text style={styles.photoLabel}>Fresh Pint</Text>
                   <Image source={{ uri: freshPhotoUri }} style={styles.photoThumb} />
                 </View>
                 {image && (
                   <View style={styles.photoCard}>
-                    <Text style={styles.photoLabel}>After Sip 📷</Text>
+                    <Text style={styles.photoLabel}>After Sip</Text>
                     <Image source={{ uri: image }} style={styles.photoThumb} />
                   </View>
                 )}
               </View>
             )}
-
-            {/* Result */}
             {result && pourStep === 'result' && (
               <View style={styles.resultBox}>
                 {!result.glass_detected && (
-                  <Text style={styles.warn}>⚠️ No Guinness detected. Try again!</Text>
+                  <Text style={styles.warn}>No Guinness detected. Try again!</Text>
                 )}
                 {result.glass_detected && !result.beer_present && (
-                  <Text style={styles.warn}>🫗 Glass looks empty — fill it up!</Text>
+                  <Text style={styles.warn}>Glass looks empty — fill it up!</Text>
                 )}
                 {result.glass_detected && !result.g_detected && result.beer_present && (
-                  <Text style={styles.warn}>⚠️ Couldn't find the G — show the label!</Text>
+                  <Text style={styles.warn}>Couldn't find the G — show the label!</Text>
                 )}
                 {result.glass_detected && result.g_detected && result.beer_present && (
                   <>
                     <Text style={styles.score}>
-                      {result.distance_cm === 0
-                        ? '🎯 PERFECT SPLIT!'
-                        : result.distance_cm <= 0.5
-                        ? `😎 ${result.distance_cm.toFixed(1)}cm off — so close!`
-                        : result.distance_cm <= 1.5
-                        ? `👍 ${result.distance_cm.toFixed(1)}cm off — not bad!`
-                        : `😬 ${result.distance_cm.toFixed(1)}cm off — keep practicing!`}
+                      {result.distance_cm === 0 ? 'PERFECT SPLIT!' :
+                       result.distance_cm <= 0.5 ? `${result.distance_cm.toFixed(1)}cm off — so close!` :
+                       result.distance_cm <= 1.5 ? `${result.distance_cm.toFixed(1)}cm off — not bad!` :
+                       `${result.distance_cm.toFixed(1)}cm off — keep practicing!`}
                     </Text>
                     <Text style={styles.position}>
                       Beer line: {result.beer_line_position?.replace(/_/g, ' ')}
@@ -529,12 +625,10 @@ export default function App() {
                 </TouchableOpacity>
               </View>
             )}
-
-            {/* History */}
             {history.length > 0 && pourStep === 'idle' && (
               <>
                 <View style={styles.historyHeader}>
-                  <Text style={styles.historyTitle}>📊 Recent Pours</Text>
+                  <Text style={styles.historyTitle}>Recent Pours</Text>
                   <TouchableOpacity onPress={clearHistory}>
                     <Text style={styles.clearBtn}>Clear</Text>
                   </TouchableOpacity>
@@ -545,7 +639,7 @@ export default function App() {
                       {h.fresh_photo_uri
                         ? <Image source={{ uri: h.fresh_photo_uri }} style={styles.historyThumb} />
                         : <View style={[styles.historyThumb, { backgroundColor: '#2a2a2a', justifyContent: 'center', alignItems: 'center' }]}>
-                            <Text>🍺</Text>
+                            <Text>-</Text>
                           </View>
                       }
                       <View style={{ flex: 1, marginLeft: 10 }}>
@@ -553,7 +647,7 @@ export default function App() {
                           ? <Text style={styles.historyScore}>{h.score.toFixed(1)}cm off</Text>
                           : <Text style={styles.historyScore}>No G score</Text>}
                         {h.bar_name && h.bar_name !== 'Unknown Bar' && (
-                          <Text style={styles.historyBar}>📍 {h.bar_name}</Text>
+                          <Text style={styles.historyBar}>{h.bar_name}</Text>
                         )}
                         {h.bar_rating > 0 && <StarRating rating={h.bar_rating} size={12} />}
                         <Text style={styles.historyDate}>{h.date}</Text>
@@ -569,7 +663,7 @@ export default function App() {
         {/* ── BARS TAB ── */}
         {activeTab === 'bars' && (
           <>
-            <Text style={styles.leaderboardTitle}>🍻 Bar Rankings</Text>
+            <Text style={styles.leaderboardTitle}>Bar Rankings</Text>
             <Text style={styles.leaderboardSub}>Rated by the Split the G community</Text>
             {bars.length === 0 && (
               <Text style={styles.emptyText}>No bars rated yet — tag a bar on your next pour!</Text>
@@ -578,7 +672,7 @@ export default function App() {
               <View key={i} style={styles.barItem}>
                 <View style={styles.barRank}>
                   <Text style={styles.barRankNum}>
-                    {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`}
+                    {i === 0 ? '1' : i === 1 ? '2' : i === 2 ? '3' : `#${i + 1}`}
                   </Text>
                 </View>
                 <View style={styles.barInfo}>
@@ -590,30 +684,109 @@ export default function App() {
                     </Text>
                   </View>
                   <Text style={styles.barVisitors}>
-                    👥 {bar.unique_visitors} visitor{bar.unique_visitors !== 1 ? 's' : ''} · avg {bar.avg_cm}cm off split
+                    {bar.unique_visitors} visitor{bar.unique_visitors !== 1 ? 's' : ''} · avg {bar.avg_cm}cm off split
                   </Text>
                 </View>
               </View>
             ))}
             <TouchableOpacity style={styles.refreshBtn} onPress={fetchBars}>
-              <Text style={styles.refreshText}>🔄 Refresh</Text>
+              <Text style={styles.refreshText}>Refresh</Text>
             </TouchableOpacity>
+          </>
+        )}
+
+        {/* ── FRIENDS TAB ── */}
+        {activeTab === 'friends' && (
+          <>
+            <Text style={styles.leaderboardTitle}>Friends</Text>
+
+            {/* Search */}
+            <TextInput
+              style={[styles.input, { width: '100%' }]}
+              placeholder="Search by username..."
+              placeholderTextColor="#555"
+              value={userSearch}
+              onChangeText={searchUsers}
+              autoCapitalize="none"
+            />
+            {userResults.length > 0 && (
+              <View style={styles.suggestionsBox}>
+                {userResults.map((u, i) => (
+                  <View key={i} style={styles.userResultRow}>
+                    <Text style={styles.userResultName}>{u.username}</Text>
+                    {u.is_following ? (
+                      <TouchableOpacity
+                        style={styles.unfollowBtn}
+                        onPress={() => handleUnfollow(u.username)}
+                        disabled={friendsLoading}>
+                        <Text style={styles.unfollowBtnText}>Unfollow</Text>
+                      </TouchableOpacity>
+                    ) : (
+                      <TouchableOpacity
+                        style={styles.followBtn}
+                        onPress={() => handleFollow(u.username)}
+                        disabled={friendsLoading}>
+                        <Text style={styles.followBtnText}>Follow</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {/* Following / Followers counts */}
+            <View style={styles.friendsStatsRow}>
+              <View style={styles.friendsStat}>
+                <Text style={styles.friendsStatValue}>{friends.following.length}</Text>
+                <Text style={styles.friendsStatLabel}>Following</Text>
+              </View>
+              <View style={styles.friendsStat}>
+                <Text style={styles.friendsStatValue}>{friends.followers.length}</Text>
+                <Text style={styles.friendsStatLabel}>Followers</Text>
+              </View>
+            </View>
+
+            {/* Feed */}
+            <Text style={styles.historyTitle}>Friend Feed</Text>
+            {friendFeed.length === 0 && (
+              <Text style={styles.emptyText}>
+                Follow friends to see their pours here!
+              </Text>
+            )}
+            {friendFeed.map((pour, i) => (
+              <View key={i} style={styles.feedCard}>
+                {pour.fresh_photo_uri
+                  ? <Image source={{ uri: pour.fresh_photo_uri }} style={styles.feedThumb} />
+                  : <View style={[styles.feedThumb, { backgroundColor: '#2a2a2a', justifyContent: 'center', alignItems: 'center' }]}>
+                      <Text style={{ color: '#555' }}>-</Text>
+                    </View>
+                }
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={styles.feedUsername}>{pour.username}</Text>
+                  {pour.bar_rating > 0 && <StarRating rating={pour.bar_rating} size={14} />}
+                  {pour.bar_name && pour.bar_name !== 'Unknown Bar' && (
+                    <Text style={styles.feedBar}>{pour.bar_name}</Text>
+                  )}
+                  {pour.distance_cm != null && (
+                    <Text style={styles.feedScore}>{pour.distance_cm.toFixed(1)}cm off</Text>
+                  )}
+                  <Text style={styles.feedDate}>{pour.timestamp?.slice(0, 10)}</Text>
+                </View>
+              </View>
+            ))}
           </>
         )}
 
         {/* ── PROFILE TAB ── */}
         {activeTab === 'profile' && (
           <>
-            {/* Header */}
             <View style={styles.profileHeader}>
-              <Text style={styles.profileAvatar}>🍺</Text>
+              <Text style={styles.profileAvatar}>[ ]</Text>
               <Text style={styles.profileName}>{username}</Text>
               <Text style={styles.profileJoined}>
                 Joined {profile?.created_at?.slice(0, 10) || 'today'}
               </Text>
             </View>
-
-            {/* Stats grid */}
             {profile && (
               <View style={styles.statsGrid}>
                 <View style={styles.statBox}>
@@ -625,67 +798,44 @@ export default function App() {
                   <Text style={styles.statLabel}>Avg G Score</Text>
                 </View>
                 <View style={styles.statBox}>
-                  <Text style={styles.statValue}>
-                    {'⭐'.repeat(profile.best_rating || 0) || '—'}
-                  </Text>
+                  <Text style={styles.statValue}>{'⭐'.repeat(profile.best_rating || 0) || '—'}</Text>
                   <Text style={styles.statLabel}>Best Rating</Text>
                 </View>
                 <View style={styles.statBox}>
-                  <Text style={styles.statValue}>
-                    {'⭐'.repeat(profile.worst_rating || 0) || '—'}
-                  </Text>
+                  <Text style={styles.statValue}>{'⭐'.repeat(profile.worst_rating || 0) || '—'}</Text>
                   <Text style={styles.statLabel}>Worst Rating</Text>
                 </View>
               </View>
             )}
-
-            {/* Pour list sorted by star rating */}
             <View style={styles.historyHeader}>
-              <Text style={styles.historyTitle}>🍺 My Pours</Text>
-              <Text style={styles.sortLabel}>⭐ best → worst</Text>
+              <Text style={styles.historyTitle}>My Pours</Text>
+              <Text style={styles.sortLabel}>best to worst</Text>
             </View>
             <Text style={styles.tiebreakNote}>Tiebreak: lower cm off ranks higher</Text>
-
             {profilePours.length === 0 && (
               <Text style={styles.emptyText}>No pours yet — start with a new pint!</Text>
             )}
-
             {profilePours.map((pour, i) => (
               <View key={i} style={styles.pourCard}>
-                {/* Rank */}
                 <RankBadge index={i} />
-
-                {/* Fresh photo thumbnail */}
                 {pour.fresh_photo_uri
                   ? <Image source={{ uri: pour.fresh_photo_uri }} style={styles.pourThumb} />
                   : <View style={[styles.pourThumb, { backgroundColor: '#2a2a2a', justifyContent: 'center', alignItems: 'center' }]}>
-                      <Text style={{ fontSize: 24 }}>🍺</Text>
+                      <Text style={{ fontSize: 24 }}>-</Text>
                     </View>
                 }
-
-                {/* Details */}
                 <View style={{ flex: 1, marginLeft: 10 }}>
-                  {/* Stars — primary sort */}
                   <StarRating rating={pour.bar_rating || 0} size={16} />
-
-                  {/* G score — tiebreaker */}
                   <Text style={styles.pourScore}>
-                    {pour.distance_cm != null
-                      ? `📏 ${pour.distance_cm.toFixed(1)}cm off`
-                      : '📏 No G score'}
+                    {pour.distance_cm != null ? `${pour.distance_cm.toFixed(1)}cm off` : 'No G score'}
                   </Text>
-
-                  {/* Bar */}
                   {pour.bar_name && pour.bar_name !== 'Unknown Bar' && (
-                    <Text style={styles.pourBar}>📍 {pour.bar_name}</Text>
+                    <Text style={styles.pourBar}>{pour.bar_name}</Text>
                   )}
-
-                  {/* Date */}
                   <Text style={styles.pourDate}>{pour.timestamp?.slice(0, 10)}</Text>
                 </View>
               </View>
             ))}
-
             <TouchableOpacity style={styles.logoutFullBtn} onPress={handleLogout}>
               <Text style={styles.logoutFullText}>Log Out</Text>
             </TouchableOpacity>
@@ -695,18 +845,15 @@ export default function App() {
         {/* ── LEADERBOARD TAB ── */}
         {activeTab === 'leaderboard' && (
           <>
-            <Text style={styles.leaderboardTitle}>🏆 Global Leaderboard</Text>
+            <Text style={styles.leaderboardTitle}>Global Leaderboard</Text>
             <Text style={styles.leaderboardSub}>Ranked by average cm from perfect</Text>
             {leaderboard.length === 0 && (
               <Text style={styles.emptyText}>No scores yet — be the first!</Text>
             )}
             {leaderboard.map((entry, i) => (
-              <View key={i} style={[
-                styles.leaderItem,
-                entry.username === username && styles.leaderItemMe
-              ]}>
+              <View key={i} style={[styles.leaderItem, entry.username === username && styles.leaderItemMe]}>
                 <Text style={styles.leaderRank}>
-                  {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`}
+                  {i === 0 ? '1' : i === 1 ? '2' : i === 2 ? '3' : `#${i + 1}`}
                 </Text>
                 <View style={styles.leaderInfo}>
                   <Text style={styles.leaderName}>
@@ -720,187 +867,16 @@ export default function App() {
               </View>
             ))}
             <TouchableOpacity style={styles.refreshBtn} onPress={fetchLeaderboard}>
-              <Text style={styles.refreshText}>🔄 Refresh</Text>
+              <Text style={styles.refreshText}>Refresh</Text>
             </TouchableOpacity>
           </>
         )}
-
       </ScrollView>
-    </View>
+
+      <BottomTabBar activeTab={activeTab} onTabPress={handleTabPress} />
+    </SafeAreaView>
   );
 }
 
 // --- Styles ---
-const styles = StyleSheet.create({
-  content: { padding: 24, alignItems: 'center', paddingBottom: 60 },
-  loginContainer: {
-    flex: 1, backgroundColor: '#0a0a0a',
-    alignItems: 'center', justifyContent: 'center', padding: 32
-  },
-  title: { fontSize: 32, fontWeight: 'bold', color: '#FDB913', marginBottom: 8 },
-  loginSubtitle: { color: '#888', fontSize: 15, textAlign: 'center', marginBottom: 32, lineHeight: 22 },
-  loginNote: { color: '#444', fontSize: 13, marginTop: 16, textAlign: 'center' },
-  header: {
-    flexDirection: 'row', justifyContent: 'space-between',
-    alignItems: 'center', width: '100%', marginTop: 50, marginBottom: 8
-  },
-  logoutBtn: { color: '#888', fontSize: 14 },
-  greeting: { color: '#888', fontSize: 16, marginBottom: 16 },
-  avgBox: {
-    backgroundColor: '#1a1a1a', borderRadius: 12, padding: 16,
-    alignItems: 'center', marginBottom: 24, width: '100%'
-  },
-  avgLabel: { color: '#888', fontSize: 12, letterSpacing: 2 },
-  avgValue: { color: '#FDB913', fontSize: 28, fontWeight: 'bold' },
-  button: {
-    backgroundColor: '#FDB913', borderRadius: 12,
-    paddingVertical: 16, paddingHorizontal: 40, marginBottom: 24
-  },
-  buttonText: { fontSize: 18, fontWeight: 'bold', color: '#000' },
-  stepBox: { alignItems: 'center', marginBottom: 16 },
-  stepText: { color: '#FDB913', marginTop: 8, fontSize: 14 },
-  loadingBox: { alignItems: 'center', marginBottom: 16 },
-  loadingText: { color: '#FDB913', marginTop: 8 },
-  photoRow: { flexDirection: 'row', gap: 12, marginBottom: 16, width: '100%' },
-  photoCard: { flex: 1, alignItems: 'center' },
-  photoLabel: { color: '#888', fontSize: 11, marginBottom: 4 },
-  photoThumb: { width: '100%', height: 180, borderRadius: 10 },
-  image: { width: 300, height: 400, borderRadius: 12, marginBottom: 16 },
-  resultBox: {
-    backgroundColor: '#1a1a1a', borderRadius: 12, padding: 16,
-    alignItems: 'center', width: '100%', marginBottom: 24
-  },
-  score: { fontSize: 22, color: '#FDB913', fontWeight: 'bold', marginBottom: 8 },
-  position: { color: '#aaa', fontSize: 14, marginBottom: 4 },
-  desc: { color: '#fff', fontSize: 14, textAlign: 'center' },
-  warn: { color: '#ff6b6b', fontSize: 16, textAlign: 'center' },
-  historyHeader: {
-    flexDirection: 'row', justifyContent: 'space-between',
-    alignItems: 'center', width: '100%', marginBottom: 4
-  },
-  historyTitle: { color: '#FDB913', fontSize: 20, fontWeight: 'bold' },
-  sortLabel: { color: '#FDB913', fontSize: 12 },
-  tiebreakNote: { color: '#555', fontSize: 11, alignSelf: 'flex-start', marginBottom: 12 },
-  clearBtn: { color: '#ff6b6b', fontSize: 14 },
-  historyItem: {
-    backgroundColor: '#1a1a1a', borderRadius: 8,
-    padding: 12, width: '100%', marginBottom: 8
-  },
-  historyTop: { flexDirection: 'row', alignItems: 'center' },
-  historyThumb: { width: 52, height: 52, borderRadius: 8 },
-  historyScore: { color: '#FDB913', fontSize: 15, fontWeight: 'bold' },
-  historyBar: { color: '#4fc3f7', fontSize: 12, marginTop: 2 },
-  historyDate: { color: '#888', fontSize: 11, marginTop: 2 },
-  pourCard: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#1a1a1a', borderRadius: 10,
-    padding: 12, marginBottom: 10, width: '100%'
-  },
-  pourThumb: { width: 64, height: 64, borderRadius: 8, marginLeft: 8 },
-  pourScore: { color: '#aaa', fontSize: 13, marginTop: 2 },
-  pourBar: { color: '#4fc3f7', fontSize: 12, marginTop: 2 },
-  pourDate: { color: '#555', fontSize: 11, marginTop: 2 },
-  tabBar: { flexDirection: 'row', marginBottom: 24, width: '100%' },
-  tab: {
-    flex: 1, paddingVertical: 10, alignItems: 'center',
-    borderBottomWidth: 2, borderBottomColor: '#333'
-  },
-  activeTab: { borderBottomColor: '#FDB913' },
-  tabText: { color: '#fff', fontSize: 13 },
-  input: {
-    width: '100%', backgroundColor: '#1a1a1a', color: '#fff',
-    borderRadius: 10, padding: 14, fontSize: 16,
-    borderWidth: 1, borderColor: '#333', marginBottom: 16
-  },
-  profileHeader: { alignItems: 'center', marginBottom: 24, width: '100%' },
-  profileAvatar: { fontSize: 56, marginBottom: 8 },
-  profileName: { color: '#fff', fontSize: 24, fontWeight: 'bold' },
-  profileJoined: { color: '#888', fontSize: 13, marginTop: 4 },
-  statsGrid: {
-    flexDirection: 'row', flexWrap: 'wrap',
-    justifyContent: 'space-between', width: '100%', marginBottom: 24
-  },
-  statBox: {
-    backgroundColor: '#1a1a1a', borderRadius: 12, padding: 14,
-    alignItems: 'center', width: '48%', marginBottom: 10
-  },
-  statValue: { color: '#FDB913', fontSize: 20, fontWeight: 'bold' },
-  statLabel: { color: '#888', fontSize: 11, marginTop: 4 },
-  logoutFullBtn: {
-    borderWidth: 1, borderColor: '#ff6b6b', borderRadius: 12,
-    paddingVertical: 14, paddingHorizontal: 40, marginTop: 16
-  },
-  logoutFullText: { color: '#ff6b6b', fontSize: 16, fontWeight: 'bold' },
-  leaderboardTitle: { color: '#FDB913', fontSize: 24, fontWeight: 'bold', marginBottom: 4 },
-  leaderboardSub: { color: '#888', fontSize: 13, marginBottom: 20 },
-  emptyText: { color: '#555', fontSize: 15, marginTop: 40, textAlign: 'center' },
-  leaderItem: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#1a1a1a', borderRadius: 10,
-    padding: 14, marginBottom: 8, width: '100%'
-  },
-  leaderItemMe: { borderWidth: 1, borderColor: '#FDB913' },
-  leaderRank: { fontSize: 22, width: 40 },
-  leaderInfo: { flex: 1 },
-  leaderName: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
-  leaderStats: { color: '#888', fontSize: 12, marginTop: 2 },
-  leaderScore: { color: '#FDB913', fontSize: 18, fontWeight: 'bold' },
-  refreshBtn: { marginTop: 16, padding: 12 },
-  refreshText: { color: '#888', fontSize: 14 },
-  barItem: {
-    flexDirection: 'row', backgroundColor: '#1a1a1a',
-    borderRadius: 12, padding: 14, marginBottom: 10, width: '100%'
-  },
-  barRank: { width: 36, justifyContent: 'center' },
-  barRankNum: { fontSize: 20 },
-  barInfo: { flex: 1 },
-  barName: { color: '#fff', fontSize: 16, fontWeight: 'bold', marginBottom: 4 },
-  barStars: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  barRatingText: { color: '#888', fontSize: 12 },
-  barVisitors: { color: '#555', fontSize: 12, marginTop: 4 },
-});
-
-const modal = StyleSheet.create({
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'flex-end' },
-  sheet: {
-    backgroundColor: '#111', borderTopLeftRadius: 24,
-    borderTopRightRadius: 24, padding: 28, paddingBottom: 48, alignItems: 'center'
-  },
-  title: { color: '#FDB913', fontSize: 24, fontWeight: 'bold', marginBottom: 4 },
-  subtitle: { color: '#888', fontSize: 14, marginBottom: 16 },
-  preview: { width: 160, height: 160, borderRadius: 12, marginBottom: 20 },
-  label: { color: '#aaa', fontSize: 14, alignSelf: 'flex-start', marginBottom: 6 },
-  ratingDesc: { color: '#fff', fontSize: 16, marginBottom: 8 },
-  skipBtn: { marginTop: 16, padding: 12 },
-  skipText: { color: '#555', fontSize: 14 },
-});
-
-const indicator = StyleSheet.create({
-  container: { alignItems: 'center', marginVertical: 16, width: '100%' },
-  label: { color: '#888', fontSize: 11, marginVertical: 4 },
-  bar: {
-    width: 80, height: 200, backgroundColor: '#1a1a1a',
-    borderRadius: 8, borderWidth: 1, borderColor: '#333',
-    position: 'relative', overflow: 'hidden',
-  },
-  gZone: {
-    position: 'absolute', left: 0, right: 0,
-    backgroundColor: 'rgba(253, 185, 19, 0.15)',
-    justifyContent: 'center', alignItems: 'center',
-  },
-  gLetter: { color: '#FDB913', fontSize: 18, fontWeight: 'bold' },
-  perfectZone: {
-    position: 'absolute', left: 0, right: 0,
-    backgroundColor: 'rgba(100, 255, 100, 0.3)',
-  },
-  midLine: { position: 'absolute', left: 0, right: 0, height: 2, backgroundColor: '#FDB913' },
-  beerLine: {
-    position: 'absolute', left: 0, right: 0, height: 2,
-    backgroundColor: '#4fc3f7', flexDirection: 'row', alignItems: 'center', paddingLeft: 4,
-  },
-  beerLabel: { color: '#4fc3f7', fontSize: 9 },
-  legend: { marginTop: 12, width: '100%' },
-  legendItem: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
-  legendDot: { width: 10, height: 10, borderRadius: 5, marginRight: 8 },
-  legendText: { color: '#888', fontSize: 12 },
-});
+const styles = StyleSheet.crea
