@@ -6,10 +6,10 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
-  "splash": {
-    "image": "./assets/splash-icon.png",
-    "resizeMode": "contain",
-    "backgroundColor": "#0a0a0a"
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0a0a0a"
     },
     "ios": {
       "supportsTablet": false,
@@ -20,6 +20,18 @@
     },
     "android": {
       "package": "com.yourname.splittheg"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "e172585e-f0f6-4dda-9865-9886076fbb01"
+      }
+    },
+    "owner": "eswasi16",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/e172585e-f0f6-4dda-9865-9886076fbb01"
     }
   }
 }
