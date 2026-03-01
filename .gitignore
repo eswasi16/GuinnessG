@@ -39,3 +39,7 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+.env
+node_modules/
+__pycache__/
+leaderboard.db
