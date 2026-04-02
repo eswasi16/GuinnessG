@@ -1,14 +1,16 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View, Text, TouchableOpacity, Image, StyleSheet,
   ScrollView, ActivityIndicator, Alert, TextInput, Modal, SafeAreaView
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import MapView, { Marker } from 'react-native-maps';
 import axios from 'axios';
 
 const API_BASE = 'https://guinness-g-api-production.up.railway.app';
 const API_URL = `${API_BASE}/analyze`;
+const GOOGLE_KEY = 'AIzaSyA6Gx9CLrp7tGHR63ltCkd0-tRG6LmQs1c';
 
 // --- Star Rating Component ---
 const StarRating = ({ rating, onRate, size = 28 }) => (
@@ -100,8 +102,8 @@ export default function App() {
   const [usernameInput, setUsernameInput] = useState('');
   const [profile, setProfile] = useState(null);
   const [profilePours, setProfilePours] = useState([]);
-  const [image, setImage] = useState(null);
   const [freshPhotoUri, setFreshPhotoUri] = useState(null);
+  const [splitImage, setSplitImage] = useState(null);
   const [result, setResult] = useState(null);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -109,13 +111,16 @@ export default function App() {
   const [leaderboard, setLeaderboard] = useState([]);
   const [bars, setBars] = useState([]);
   const [activeTab, setActiveTab] = useState('camera');
+  const [pourMode, setPourMode] = useState('idle');
+  const [selectedBar, setSelectedBar] = useState(null);
 
-  // Pour flow
-  const [pourStep, setPourStep] = useState('idle');
+  // Bar modal
   const [showBarModal, setShowBarModal] = useState(false);
   const [barName, setBarName] = useState('');
   const [barRating, setBarRating] = useState(0);
   const [barSuggestions, setBarSuggestions] = useState([]);
+  const [barLat, setBarLat] = useState(null);
+  const [barLng, setBarLng] = useState(null);
 
   // Friends
   const [friendFeed, setFriendFeed] = useState([]);
@@ -135,6 +140,11 @@ export default function App() {
         setUsername(u);
         loadProfile(u);
         loadProfilePours(u);
+        loadHistory(u);
+        fetchLeaderboard();
+        fetchBars();
+        loadFriends(u);
+        loadFriendFeed(u);
         setScreen('main');
       }
     });
@@ -249,9 +259,9 @@ export default function App() {
         text: 'Log Out', onPress: async () => {
           await AsyncStorage.removeItem('username');
           setUsername(''); setProfile(null); setProfilePours([]);
-          setHistory([]); setResult(null); setImage(null);
+          setHistory([]); setResult(null); setSplitImage(null);
           setFreshPhotoUri(null); setUsernameInput('');
-          setPourStep('idle'); setFriendFeed([]);
+          setPourMode('idle'); setFriendFeed([]);
           setFriends({ following: [], followers: [] });
           setScreen('login');
         }
@@ -276,7 +286,9 @@ export default function App() {
     try {
       await axios.post(`${API_BASE}/scores`, {
         username, distance_cm, description: desc,
-        bar_name: bar, bar_rating: rating, fresh_photo_uri: freshUri
+        bar_name: bar, bar_rating: rating,
+        fresh_photo_uri: freshUri,
+        lat: barLat, lng: barLng
       });
     } catch (e) { console.log('Score submit failed:', e); }
     await fetchLeaderboard();
@@ -301,11 +313,43 @@ export default function App() {
 
   const searchBars = async (q) => {
     setBarName(q);
+    setBarLat(null);
+    setBarLng(null);
     if (!q.trim()) { setBarSuggestions([]); return; }
     try {
-      const { data } = await axios.get(`${API_BASE}/bars/search?q=${q}`);
-      setBarSuggestions(data);
+      const [{ data: localBars }, googleRes] = await Promise.all([
+        axios.get(`${API_BASE}/bars/search?q=${q}`),
+        axios.get('https://maps.googleapis.com/maps/api/place/autocomplete/json', {
+          params: { input: q, types: 'establishment', key: GOOGLE_KEY }
+        })
+      ]);
+      const localSuggestions = localBars.map(b => ({ name: b, place_id: null }));
+      const googleSuggestions = (googleRes.data.predictions || []).map(p => ({
+        name: p.description,
+        place_id: p.place_id
+      }));
+      const seen = new Set(localSuggestions.map(s => s.name.toLowerCase()));
+      const merged = [
+        ...localSuggestions,
+        ...googleSuggestions.filter(s => !seen.has(s.name.toLowerCase()))
+      ];
+      setBarSuggestions(merged.slice(0, 8));
     } catch (e) { console.log('Bar search failed:', e); }
+  };
+
+  const selectBar = async (bar) => {
+    setBarName(bar.name);
+    setBarSuggestions([]);
+    if (bar.place_id) {
+      try {
+        const res = await axios.get(
+          'https://maps.googleapis.com/maps/api/place/details/json',
+          { params: { place_id: bar.place_id, fields: 'geometry', key: GOOGLE_KEY } }
+        );
+        const loc = res.data.result?.geometry?.location;
+        if (loc) { setBarLat(loc.lat); setBarLng(loc.lng); }
+      } catch (e) { console.log('Place details failed:', e); }
+    }
   };
 
   const clearHistory = async () => {
@@ -326,15 +370,11 @@ export default function App() {
       {
         text: 'Delete', style: 'destructive', onPress: async () => {
           try {
-            await axios.delete(`${API_BASE}/scores/${pourId}`, {
-              data: { username }
-            });
+            await axios.delete(`${API_BASE}/scores/${pourId}`, { data: { username } });
             await loadProfilePours(username);
             await loadProfile(username);
             await loadHistory(username);
-          } catch (e) {
-            Alert.alert('Error', 'Could not delete pour.');
-          }
+          } catch (e) { Alert.alert('Error', 'Could not delete pour.'); }
         }
       }
     ]);
@@ -346,14 +386,10 @@ export default function App() {
        history.filter(h => h.score != null).length).toFixed(1)
     : null;
 
-  const startNewPour = async () => {
+  const startRatingPour = async () => {
     try {
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Camera access is needed!');
-        return;
-      }
-      setPourStep('fresh');
+      if (status !== 'granted') { Alert.alert('Permission Required', 'Camera access is needed!'); return; }
       const pic = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.8 });
       if (!pic.canceled) {
         const uri = pic.assets[0].uri;
@@ -366,70 +402,37 @@ export default function App() {
           });
           setLoading(false);
           if (!data.glass_detected || !data.beer_present) {
-            Alert.alert(
-              'Not a Guinness',
-              "We couldn't detect a Guinness in that photo. Try again with the label visible!"
-            );
-            setPourStep('idle');
+            Alert.alert('Not a Guinness', "We couldn't detect a Guinness. Try again with the label visible!");
             return;
           }
           setFreshPhotoUri(uri);
-          setImage(null);
-          setResult(null);
           setBarName('');
           setBarRating(0);
+          setBarLat(null);
+          setBarLng(null);
           setBarSuggestions([]);
-          setPourStep('rating');
           setShowBarModal(true);
         } catch (e) {
           setLoading(false);
           Alert.alert('Error', 'Analysis failed. Check your connection.');
-          setPourStep('idle');
         }
-      } else {
-        setPourStep('idle');
       }
     } catch (e) {
       Alert.alert('Camera Error', e.message);
-      setPourStep('idle');
     }
   };
 
-  const handleBarSubmit = () => {
-    if (!barName.trim()) { Alert.alert('Bar Name Required', 'Enter the bar name!'); return; }
-    if (barRating === 0) { Alert.alert('Rating Required', 'Please rate your Guinness!'); return; }
-    setShowBarModal(false);
-    setBarSuggestions([]);
-    Alert.alert(
-      'Measure Your Split?',
-      'Take a sip then photograph the glass to measure your Split the G score.',
-      [
-        { text: 'Skip for now', onPress: () => handleSaveWithoutScore() },
-        { text: 'Take Sip Photo', onPress: () => takeSipPhoto() }
-      ]
-    );
-  };
-
-  const handleBarSkip = () => {
-    setShowBarModal(false);
-    setBarSuggestions([]);
-    handleSaveWithoutScore();
-  };
-
-  const handleSaveWithoutScore = async () => {
-    await saveScore(null, 'No G score recorded', barName.trim(), barRating, freshPhotoUri);
-    setPourStep('idle');
-  };
-
-  const takeSipPhoto = async () => {
+  const startSplitPour = async () => {
     try {
-      setPourStep('sip');
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') { Alert.alert('Permission Required', 'Camera access is needed!'); return; }
       const pic = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.8 });
       if (!pic.canceled) {
         const uri = pic.assets[0].uri;
-        setImage(uri);
+        setSplitImage(uri);
+        setResult(null);
         setLoading(true);
-        setPourStep('result');
+        setPourMode('result');
         const formData = new FormData();
         formData.append('file', { uri, name: 'pint.jpg', type: 'image/jpeg' });
         try {
@@ -438,34 +441,39 @@ export default function App() {
           });
           setResult(data);
           if (data.glass_detected && data.g_detected && data.beer_present) {
-            await saveScore(data.distance_cm, data.description, barName.trim(), barRating, freshPhotoUri);
+            await saveScore(data.distance_cm, data.description, 'Unknown Bar', 0, uri);
           } else {
-            Alert.alert(
-              'Not a valid Guinness',
-              'We could not detect a proper Guinness glass. This pour will not be saved.',
-              [{ text: 'OK', onPress: () => {
-                setPourStep('idle');
-                setResult(null);
-                setImage(null);
-                setFreshPhotoUri(null);
-              }}]
-            );
+            Alert.alert('Not a valid Guinness', 'Could not detect a proper Guinness glass. Not saved.');
           }
         } catch (e) {
           Alert.alert('Error', 'Analysis failed. Check your connection.');
         }
         setLoading(false);
-      } else {
-        setPourStep('idle');
       }
     } catch (e) {
       Alert.alert('Camera Error', e.message);
-      setPourStep('idle');
     }
+  };
+
+  const handleBarSubmit = () => {
+    if (!barName.trim()) { Alert.alert('Bar Name Required', 'Enter the bar name!'); return; }
+    if (barRating === 0) { Alert.alert('Rating Required', 'Please rate your Guinness!'); return; }
+    setShowBarModal(false);
+    setBarSuggestions([]);
+    saveScore(null, 'No G score recorded', barName.trim(), barRating, freshPhotoUri);
+  };
+
+  const handleBarSkip = () => {
+    setShowBarModal(false);
+    setBarSuggestions([]);
+    setFreshPhotoUri(null);
+    setBarLat(null);
+    setBarLng(null);
   };
 
   const handleTabPress = (key) => {
     setActiveTab(key);
+    setSelectedBar(null);
     if (key === 'leaderboard') fetchLeaderboard();
     if (key === 'bars') fetchBars();
     if (key === 'profile') { loadProfile(username); loadProfilePours(username); }
@@ -520,7 +528,7 @@ export default function App() {
             <Text style={modal.label}>Bar Name</Text>
             <TextInput
               style={styles.input}
-              placeholder="e.g. The Dead Rabbit, Mulligan's..."
+              placeholder="Search for a bar..."
               placeholderTextColor="#555"
               value={barName}
               onChangeText={searchBars}
@@ -529,14 +537,33 @@ export default function App() {
             {barSuggestions.length > 0 && (
               <View style={styles.suggestionsBox}>
                 {barSuggestions.map((s, i) => (
-                  <TouchableOpacity
-                    key={i}
-                    style={styles.suggestionItem}
-                    onPress={() => { setBarName(s); setBarSuggestions([]); }}>
-                    <Text style={styles.suggestionText}>{s}</Text>
+                  <TouchableOpacity key={i} style={styles.suggestionItem}
+                    onPress={() => selectBar(s)}>
+                    <Text style={styles.suggestionText}>{s.name}</Text>
+                    {s.place_id && (
+                      <Text style={styles.suggestionSub}>📍 Google Maps</Text>
+                    )}
                   </TouchableOpacity>
                 ))}
               </View>
+            )}
+            {barLat && barLng && (
+              <MapView
+                style={modal.map}
+                initialRegion={{
+                  latitude: barLat,
+                  longitude: barLng,
+                  latitudeDelta: 0.005,
+                  longitudeDelta: 0.005,
+                }}
+                scrollEnabled={false}
+                zoomEnabled={false}
+              >
+                <Marker
+                  coordinate={{ latitude: barLat, longitude: barLng }}
+                  title={barName}
+                />
+              </MapView>
             )}
             <Text style={modal.label}>Your Rating</Text>
             <StarRating rating={barRating} onRate={setBarRating} />
@@ -552,20 +579,17 @@ export default function App() {
             <TouchableOpacity
               style={[styles.button, { width: '100%', alignItems: 'center', marginTop: 16 }]}
               onPress={handleBarSubmit}>
-              <Text style={styles.buttonText}>Next</Text>
+              <Text style={styles.buttonText}>Save Rating</Text>
             </TouchableOpacity>
             <TouchableOpacity style={modal.skipBtn} onPress={handleBarSkip}>
-              <Text style={modal.skipText}>Skip for now</Text>
+              <Text style={modal.skipText}>Cancel</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
       {/* Profile Viewer Modal */}
-      <Modal
-        visible={!!viewingProfile}
-        transparent
-        animationType="slide"
+      <Modal visible={!!viewingProfile} transparent animationType="slide"
         onRequestClose={() => setViewingProfile(null)}>
         <View style={profileModal.overlay}>
           <View style={profileModal.sheet}>
@@ -623,7 +647,6 @@ export default function App() {
       </Modal>
 
       <ScrollView contentContainerStyle={styles.content}>
-        {/* Header */}
         <View style={styles.header}>
           <Text style={styles.title}>Split the G</Text>
         </View>
@@ -638,47 +661,29 @@ export default function App() {
                 <Text style={styles.avgValue}>{average}cm off perfect</Text>
               </View>
             )}
-            {pourStep === 'idle' && (
-              <TouchableOpacity style={styles.button} onPress={startNewPour}>
-                <Text style={styles.buttonText}>New Pint</Text>
-              </TouchableOpacity>
+            {pourMode === 'idle' && !loading && (
+              <View style={{ width: '100%', gap: 12, marginBottom: 24 }}>
+                <TouchableOpacity style={styles.button} onPress={startRatingPour}>
+                  <Text style={styles.buttonText}>📸  Rate a Pint</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.outlineButton} onPress={startSplitPour}>
+                  <Text style={styles.outlineButtonText}>🎯  Measure Split the G</Text>
+                </TouchableOpacity>
+              </View>
             )}
-            {(pourStep === 'fresh' || loading) && !showBarModal && (
-              <View style={styles.stepBox}>
-                <ActivityIndicator color="#FDB913" />
-                <Text style={styles.stepText}>
-                  {loading ? 'Checking your Guinness...' : 'Taking fresh pint photo...'}
+            {loading && (
+              <View style={styles.loadingBox}>
+                <ActivityIndicator size="large" color="#FDB913" />
+                <Text style={styles.loadingText}>
+                  {pourMode === 'result' ? 'Analyzing your split...' : 'Checking your Guinness...'}
                 </Text>
               </View>
             )}
-            {pourStep === 'sip' && (
-              <View style={styles.stepBox}>
-                <ActivityIndicator color="#FDB913" />
-                <Text style={styles.stepText}>Step 3: Take your sip photo...</Text>
-              </View>
-            )}
-            {loading && pourStep === 'result' && (
-              <View style={styles.loadingBox}>
-                <ActivityIndicator size="large" color="#FDB913" />
-                <Text style={styles.loadingText}>Analyzing your split...</Text>
-              </View>
-            )}
-            {freshPhotoUri && pourStep === 'result' && (
-              <View style={styles.photoRow}>
-                <View style={styles.photoCard}>
-                  <Text style={styles.photoLabel}>Fresh Pint</Text>
-                  <Image source={{ uri: freshPhotoUri }} style={styles.photoThumb} />
-                </View>
-                {image && (
-                  <View style={styles.photoCard}>
-                    <Text style={styles.photoLabel}>After Sip</Text>
-                    <Image source={{ uri: image }} style={styles.photoThumb} />
-                  </View>
-                )}
-              </View>
-            )}
-            {result && pourStep === 'result' && (
+            {result && pourMode === 'result' && !loading && (
               <View style={styles.resultBox}>
+                {splitImage && (
+                  <Image source={{ uri: splitImage }} style={[styles.photoThumb, { marginBottom: 16 }]} />
+                )}
                 {!result.glass_detected && (
                   <Text style={styles.warn}>No Guinness detected. Try again!</Text>
                 )}
@@ -704,16 +709,23 @@ export default function App() {
                       gMidpointPct={result.g_midpoint_pct}
                       beerLinePct={result.beer_line_pct}
                     />
+                    {result.measurement_method && (
+                      <Text style={styles.methodBadge}>
+                        {result.measurement_method === 'opencv+homography'
+                          ? '📐 Measured with OpenCV'
+                          : '🤖 Measured with AI'}
+                      </Text>
+                    )}
                   </>
                 )}
                 <TouchableOpacity
                   style={[styles.button, { marginTop: 16 }]}
-                  onPress={() => { setPourStep('idle'); setResult(null); setImage(null); setFreshPhotoUri(null); }}>
-                  <Text style={styles.buttonText}>New Pour</Text>
+                  onPress={() => { setPourMode('idle'); setResult(null); setSplitImage(null); setFreshPhotoUri(null); }}>
+                  <Text style={styles.buttonText}>Done</Text>
                 </TouchableOpacity>
               </View>
             )}
-            {history.length > 0 && pourStep === 'idle' && (
+            {history.length > 0 && pourMode === 'idle' && !loading && (
               <>
                 <View style={styles.historyHeader}>
                   <Text style={styles.historyTitle}>Recent Pours</Text>
@@ -753,11 +765,60 @@ export default function App() {
           <>
             <Text style={styles.leaderboardTitle}>Bar Rankings</Text>
             <Text style={styles.leaderboardSub}>Rated by the Split the G community</Text>
+
+            {bars.some(b => b.lat && b.lng) && (
+              <MapView
+                style={styles.fullMap}
+                initialRegion={{
+                  latitude: bars.find(b => b.lat)?.lat || 38.9072,
+                  longitude: bars.find(b => b.lng)?.lng || -77.0369,
+                  latitudeDelta: 0.1,
+                  longitudeDelta: 0.1,
+                }}
+                scrollEnabled={true}
+                zoomEnabled={true}
+                showsUserLocation={true}
+              >
+                {bars.filter(b => b.lat && b.lng).map((bar, i) => (
+                  <Marker
+                    key={i}
+                    coordinate={{ latitude: bar.lat, longitude: bar.lng }}
+                    title={bar.bar_name}
+                    description={`${'⭐'.repeat(Math.round(bar.avg_rating))} ${bar.avg_rating?.toFixed(1)} · ${bar.total_pours} pours · avg ${bar.avg_cm}cm off`}
+                    pinColor="#FDB913"
+                    onPress={() => setSelectedBar(bar)}
+                  />
+                ))}
+              </MapView>
+            )}
+
+            {selectedBar && (
+              <View style={styles.selectedBarCard}>
+                <View style={styles.selectedBarHeader}>
+                  <Text style={styles.selectedBarName}>{selectedBar.bar_name}</Text>
+                  <TouchableOpacity onPress={() => setSelectedBar(null)}>
+                    <Text style={styles.selectedBarClose}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+                <StarRating rating={Math.round(selectedBar.avg_rating)} size={18} />
+                <Text style={styles.selectedBarStats}>
+                  {selectedBar.avg_rating?.toFixed(1)} avg · {selectedBar.total_pours} pour{selectedBar.total_pours !== 1 ? 's' : ''} · {selectedBar.unique_visitors} visitor{selectedBar.unique_visitors !== 1 ? 's' : ''}
+                </Text>
+                <Text style={styles.selectedBarScore}>
+                  avg {selectedBar.avg_cm}cm off the split
+                </Text>
+              </View>
+            )}
+
             {bars.length === 0 && (
               <Text style={styles.emptyText}>No bars rated yet — tag a bar on your next pour!</Text>
             )}
             {bars.map((bar, i) => (
-              <View key={i} style={styles.barItem}>
+              <TouchableOpacity
+                key={i}
+                style={[styles.barItem, selectedBar?.bar_name === bar.bar_name && styles.barItemSelected]}
+                onPress={() => setSelectedBar(selectedBar?.bar_name === bar.bar_name ? null : bar)}
+              >
                 <View style={styles.barRank}>
                   <Text style={styles.barRankNum}>#{i + 1}</Text>
                 </View>
@@ -773,7 +834,7 @@ export default function App() {
                     {bar.unique_visitors} visitor{bar.unique_visitors !== 1 ? 's' : ''} · avg {bar.avg_cm}cm off split
                   </Text>
                 </View>
-              </View>
+              </TouchableOpacity>
             ))}
             <TouchableOpacity style={styles.refreshBtn} onPress={fetchBars}>
               <Text style={styles.refreshText}>Refresh</Text>
@@ -801,17 +862,13 @@ export default function App() {
                       <Text style={styles.userResultName}>{u.username}</Text>
                     </TouchableOpacity>
                     {u.is_following ? (
-                      <TouchableOpacity
-                        style={styles.unfollowBtn}
-                        onPress={() => handleUnfollow(u.username)}
-                        disabled={friendsLoading}>
+                      <TouchableOpacity style={styles.unfollowBtn}
+                        onPress={() => handleUnfollow(u.username)} disabled={friendsLoading}>
                         <Text style={styles.unfollowBtnText}>Unfollow</Text>
                       </TouchableOpacity>
                     ) : (
-                      <TouchableOpacity
-                        style={styles.followBtn}
-                        onPress={() => handleFollow(u.username)}
-                        disabled={friendsLoading}>
+                      <TouchableOpacity style={styles.followBtn}
+                        onPress={() => handleFollow(u.username)} disabled={friendsLoading}>
                         <Text style={styles.followBtnText}>Follow</Text>
                       </TouchableOpacity>
                     )}
@@ -831,22 +888,16 @@ export default function App() {
             </View>
             {friends.following.length > 0 && (
               <>
-                <Text style={[styles.historyTitle, { alignSelf: 'flex-start', marginBottom: 8 }]}>
-                  Following
-                </Text>
+                <Text style={[styles.historyTitle, { alignSelf: 'flex-start', marginBottom: 8 }]}>Following</Text>
                 {friends.following.map((name, i) => (
                   <View key={i} style={styles.friendRow}>
                     <Text style={styles.friendRowName}>{name}</Text>
                     <View style={{ flexDirection: 'row', gap: 8 }}>
-                      <TouchableOpacity
-                        style={styles.viewProfileBtn}
-                        onPress={() => setViewingProfile(name)}>
+                      <TouchableOpacity style={styles.viewProfileBtn} onPress={() => setViewingProfile(name)}>
                         <Text style={styles.viewProfileBtnText}>View</Text>
                       </TouchableOpacity>
-                      <TouchableOpacity
-                        style={styles.unfollowBtn}
-                        onPress={() => handleUnfollow(name)}
-                        disabled={friendsLoading}>
+                      <TouchableOpacity style={styles.unfollowBtn}
+                        onPress={() => handleUnfollow(name)} disabled={friendsLoading}>
                         <Text style={styles.unfollowBtnText}>Unfollow</Text>
                       </TouchableOpacity>
                     </View>
@@ -856,15 +907,11 @@ export default function App() {
             )}
             {friends.followers.length > 0 && (
               <>
-                <Text style={[styles.historyTitle, { alignSelf: 'flex-start', marginTop: 16, marginBottom: 8 }]}>
-                  Followers
-                </Text>
+                <Text style={[styles.historyTitle, { alignSelf: 'flex-start', marginTop: 16, marginBottom: 8 }]}>Followers</Text>
                 {friends.followers.map((name, i) => (
                   <View key={i} style={styles.friendRow}>
                     <Text style={styles.friendRowName}>{name}</Text>
-                    <TouchableOpacity
-                      style={styles.viewProfileBtn}
-                      onPress={() => setViewingProfile(name)}>
+                    <TouchableOpacity style={styles.viewProfileBtn} onPress={() => setViewingProfile(name)}>
                       <Text style={styles.viewProfileBtnText}>View</Text>
                     </TouchableOpacity>
                   </View>
@@ -957,9 +1004,7 @@ export default function App() {
                   )}
                   <Text style={styles.pourDate}>{pour.timestamp?.slice(0, 10)}</Text>
                 </View>
-                <TouchableOpacity
-                  onPress={() => deletePour(pour.id)}
-                  style={styles.deleteBtn}>
+                <TouchableOpacity onPress={() => deletePour(pour.id)} style={styles.deleteBtn}>
                   <Text style={styles.deleteBtnText}>✕</Text>
                 </TouchableOpacity>
               </View>
@@ -979,8 +1024,7 @@ export default function App() {
               <Text style={styles.emptyText}>No scores yet — be the first!</Text>
             )}
             {leaderboard.map((entry, i) => (
-              <TouchableOpacity
-                key={i}
+              <TouchableOpacity key={i}
                 style={[styles.leaderItem, entry.username === username && styles.leaderItemMe]}
                 onPress={() => setViewingProfile(entry.username)}>
                 <Text style={styles.leaderRank}>#{i + 1}</Text>
@@ -1030,17 +1074,19 @@ const styles = StyleSheet.create({
   avgValue: { color: '#FDB913', fontSize: 28, fontWeight: 'bold' },
   button: {
     backgroundColor: '#FDB913', borderRadius: 12,
-    paddingVertical: 16, paddingHorizontal: 40, marginBottom: 24
+    paddingVertical: 16, paddingHorizontal: 40,
+    alignItems: 'center', marginBottom: 4
   },
   buttonText: { fontSize: 18, fontWeight: 'bold', color: '#000' },
-  stepBox: { alignItems: 'center', marginBottom: 16 },
-  stepText: { color: '#FDB913', marginTop: 8, fontSize: 14 },
+  outlineButton: {
+    backgroundColor: '#1a1a1a', borderRadius: 12,
+    paddingVertical: 16, paddingHorizontal: 40,
+    alignItems: 'center', borderWidth: 1, borderColor: '#FDB913'
+  },
+  outlineButtonText: { fontSize: 18, fontWeight: 'bold', color: '#FDB913' },
   loadingBox: { alignItems: 'center', marginBottom: 16 },
   loadingText: { color: '#FDB913', marginTop: 8 },
-  photoRow: { flexDirection: 'row', gap: 12, marginBottom: 16, width: '100%' },
-  photoCard: { flex: 1, alignItems: 'center' },
-  photoLabel: { color: '#888', fontSize: 11, marginBottom: 4 },
-  photoThumb: { width: '100%', height: 180, borderRadius: 10 },
+  photoThumb: { width: '100%', height: 220, borderRadius: 12 },
   resultBox: {
     backgroundColor: '#1a1a1a', borderRadius: 12, padding: 16,
     alignItems: 'center', width: '100%', marginBottom: 24
@@ -1049,6 +1095,7 @@ const styles = StyleSheet.create({
   position: { color: '#aaa', fontSize: 14, marginBottom: 4 },
   desc: { color: '#fff', fontSize: 14, textAlign: 'center' },
   warn: { color: '#ff6b6b', fontSize: 16, textAlign: 'center' },
+  methodBadge: { color: '#555', fontSize: 12, marginTop: 8 },
   historyHeader: {
     flexDirection: 'row', justifyContent: 'space-between',
     alignItems: 'center', width: '100%', marginBottom: 4
@@ -1089,6 +1136,7 @@ const styles = StyleSheet.create({
   },
   suggestionItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: '#2a2a2a' },
   suggestionText: { color: '#fff', fontSize: 15 },
+  suggestionSub: { color: '#555', fontSize: 11, marginTop: 2 },
   userResultRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     padding: 12, borderBottomWidth: 1, borderBottomColor: '#2a2a2a'
@@ -1170,6 +1218,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row', backgroundColor: '#1a1a1a',
     borderRadius: 12, padding: 14, marginBottom: 10, width: '100%'
   },
+  barItemSelected: { borderWidth: 1, borderColor: '#FDB913' },
   barRank: { width: 36, justifyContent: 'center' },
   barRankNum: { fontSize: 20, color: '#FDB913', fontWeight: 'bold' },
   barInfo: { flex: 1 },
@@ -1177,6 +1226,19 @@ const styles = StyleSheet.create({
   barStars: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   barRatingText: { color: '#888', fontSize: 12 },
   barVisitors: { color: '#555', fontSize: 12, marginTop: 4 },
+  fullMap: { width: '100%', height: 300, borderRadius: 16, marginBottom: 16 },
+  selectedBarCard: {
+    backgroundColor: '#1a1a1a', borderRadius: 12, padding: 16,
+    width: '100%', marginBottom: 16, borderWidth: 1, borderColor: '#FDB913',
+  },
+  selectedBarHeader: {
+    flexDirection: 'row', justifyContent: 'space-between',
+    alignItems: 'center', marginBottom: 4,
+  },
+  selectedBarName: { color: '#FDB913', fontSize: 18, fontWeight: 'bold', flex: 1 },
+  selectedBarClose: { color: '#888', fontSize: 18, paddingLeft: 12 },
+  selectedBarStats: { color: '#aaa', fontSize: 13, marginTop: 2 },
+  selectedBarScore: { color: '#555', fontSize: 12, marginTop: 4 },
 });
 
 const bottomNav = StyleSheet.create({
@@ -1203,6 +1265,7 @@ const modal = StyleSheet.create({
   title: { color: '#FDB913', fontSize: 24, fontWeight: 'bold', marginBottom: 4 },
   subtitle: { color: '#888', fontSize: 14, marginBottom: 16 },
   preview: { width: 160, height: 160, borderRadius: 12, marginBottom: 20 },
+  map: { width: '100%', height: 130, borderRadius: 12, marginBottom: 16 },
   label: { color: '#aaa', fontSize: 14, alignSelf: 'flex-start', marginBottom: 6 },
   ratingDesc: { color: '#fff', fontSize: 16, marginBottom: 8 },
   skipBtn: { marginTop: 16, padding: 12 },
