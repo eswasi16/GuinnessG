@@ -950,8 +950,8 @@ export default function App() {
                     {result.measurement_method && (
                       <Text style={styles.methodBadge}>
                         {result.measurement_method === 'opencv+homography'
-                          ? '📐 Measured with OpenCV'
-                          : '🤖 Measured with AI'}
+                          ? 'Measured with OpenCV'
+                          : 'Measured with AI'}
                       </Text>
                     )}
                   </>
