@@ -145,6 +145,12 @@ export default function App() {
   const [viewingProfileData, setViewingProfileData] = useState(null);
   const [viewingProfilePours, setViewingProfilePours] = useState([]);
 
+  // Edit profile
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [editFirstName, setEditFirstName] = useState('');
+  const [editLastName, setEditLastName] = useState('');
+  const [editSaving, setEditSaving] = useState(false);
+
   useEffect(() => {
     AsyncStorage.getItem('token').then(async token => {
       if (token) {
@@ -187,7 +193,7 @@ export default function App() {
     load();
   }, [viewingProfile]);
 
-  const completeLogin = async (token, name, first, last) => {
+  const completeLogin = async (token, name, first, last, photo) => {
     await AsyncStorage.setItem('token', token);
     await AsyncStorage.setItem('username', name);
     await AsyncStorage.setItem('firstName', first || '');
@@ -222,7 +228,7 @@ export default function App() {
         setAuthLoading(false);
         return;
       }
-      await completeLogin(data.token, data.username, data.first_name, data.last_name);
+      await completeLogin(data.token, data.username, data.first_name, data.last_name, data.photo_url);
     } catch (e) {
       Alert.alert('Error', 'Could not connect to server.');
       setAuthLoading(false);
@@ -249,7 +255,7 @@ export default function App() {
         setAuthLoading(false);
         return;
       }
-      await completeLogin(data.token, data.username, data.first_name, data.last_name);
+      await completeLogin(data.token, data.username, data.first_name, data.last_name, data.photo_url);
     } catch (e) {
       Alert.alert('Error', 'Could not connect to server.');
       setAuthLoading(false);
@@ -469,6 +475,60 @@ export default function App() {
     ]);
   };
 
+  const handlePickProfilePhoto = async () => {
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Photo library access is needed.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.7,
+      });
+      if (!result.canceled) {
+        const uri = result.assets[0].uri;
+        const formData = new FormData();
+        formData.append('file', { uri, name: 'avatar.jpg', type: 'image/jpeg' });
+        const { data } = await axios.post(
+          `${API_BASE}/profile/${username}/photo`, formData,
+          { headers: { 'Content-Type': 'multipart/form-data' } }
+        );
+        if (data.photo_url) {
+          await loadProfile(username);
+        }
+      }
+    } catch (e) {
+      Alert.alert('Error', 'Could not upload photo.');
+    }
+  };
+
+  const handleSaveProfile = async () => {
+    if (!editFirstName.trim() || !editLastName.trim()) {
+      Alert.alert('Required', 'First and last name cannot be empty.');
+      return;
+    }
+    setEditSaving(true);
+    try {
+      const { data } = await axios.post(`${API_BASE}/profile/${username}/edit`, {
+        first_name: editFirstName.trim(),
+        last_name: editLastName.trim(),
+      });
+      if (data.error) { Alert.alert('Error', data.error); setEditSaving(false); return; }
+      setFirstName(data.first_name);
+      setLastName(data.last_name);
+      await AsyncStorage.setItem('firstName', data.first_name);
+      await AsyncStorage.setItem('lastName', data.last_name);
+      await loadProfile(username);
+      setEditModalVisible(false);
+    } catch (e) {
+      Alert.alert('Error', 'Could not save changes.');
+    }
+    setEditSaving(false);
+  };
+
   const average = history.filter(h => h.score != null).length
     ? (history.filter(h => h.score != null)
         .reduce((a, b) => a + b.score, 0) /
@@ -568,6 +628,8 @@ export default function App() {
     if (key === 'profile') { loadProfile(username); loadProfilePours(username); }
     if (key === 'friends') { loadFriends(username); loadFriendFeed(username); }
   };
+
+  const avatarUrl = profile?.photo_url ? `${API_BASE}${profile.photo_url}?t=${profile.photo_url}` : null;
 
   // ── LOGIN SCREEN ──────────────────────────────────────────────────────────
   if (screen === 'login') {
@@ -744,7 +806,67 @@ export default function App() {
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#0a0a0a' }}>
 
-      {/* Bar Rating Modal */}
+      {/* ── Edit Profile Modal ── */}
+      <Modal visible={editModalVisible} transparent animationType="slide"
+        onRequestClose={() => setEditModalVisible(false)}>
+        <View style={modal.overlay}>
+          <ScrollView contentContainerStyle={modal.sheet} keyboardShouldPersistTaps="handled">
+            <Text style={modal.title}>Edit Profile</Text>
+
+            {/* Avatar picker */}
+            <TouchableOpacity onPress={handlePickProfilePhoto} style={editStyles.avatarBtn}>
+              {avatarUrl
+                ? <Image source={{ uri: avatarUrl }} style={editStyles.avatarLarge} />
+                : <View style={editStyles.avatarPlaceholderLarge}>
+                    <Text style={editStyles.avatarInitial}>
+                      {editFirstName?.[0]?.toUpperCase() || username?.[0]?.toUpperCase() || '?'}
+                    </Text>
+                  </View>
+              }
+              <View style={editStyles.cameraOverlay}>
+                <Text style={{ fontSize: 16 }}>📷</Text>
+              </View>
+            </TouchableOpacity>
+            <Text style={{ color: '#888', fontSize: 13, marginBottom: 24 }}>Tap to change photo</Text>
+
+            <View style={styles.nameRow}>
+              <TextInput
+                style={[styles.input, { flex: 1, marginRight: 8 }]}
+                placeholder="First name"
+                placeholderTextColor="#555"
+                value={editFirstName}
+                onChangeText={setEditFirstName}
+                autoCapitalize="words"
+              />
+              <TextInput
+                style={[styles.input, { flex: 1 }]}
+                placeholder="Last name"
+                placeholderTextColor="#555"
+                value={editLastName}
+                onChangeText={setEditLastName}
+                autoCapitalize="words"
+              />
+            </View>
+
+            <Text style={editStyles.usernameNote}>@{username} · username cannot be changed</Text>
+
+            <TouchableOpacity
+              style={[styles.button, { width: '100%', alignItems: 'center' },
+                editSaving && { opacity: 0.4 }]}
+              disabled={editSaving}
+              onPress={handleSaveProfile}>
+              {editSaving
+                ? <ActivityIndicator color="#000" />
+                : <Text style={styles.buttonText}>Save Changes</Text>}
+            </TouchableOpacity>
+            <TouchableOpacity style={modal.skipBtn} onPress={() => setEditModalVisible(false)}>
+              <Text style={modal.skipText}>Cancel</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </View>
+      </Modal>
+
+      {/* ── Bar Rating Modal ── */}
       <Modal visible={showBarModal} transparent animationType="slide"
         onRequestClose={() => setShowBarModal(false)}>
         <View style={modal.overlay}>
@@ -817,21 +939,34 @@ export default function App() {
         </View>
       </Modal>
 
-      {/* Profile Viewer Modal */}
+      {/* ── Profile Viewer Modal ── */}
       <Modal visible={!!viewingProfile} transparent animationType="slide"
         onRequestClose={() => setViewingProfile(null)}>
         <View style={profileModal.overlay}>
           <View style={profileModal.sheet}>
             <View style={profileModal.headerRow}>
-              <View>
-                <Text style={profileModal.name}>
-                  {viewingProfileData?.first_name && viewingProfileData?.last_name
-                    ? `${viewingProfileData.first_name} ${viewingProfileData.last_name}`
-                    : viewingProfile}
-                </Text>
-                {viewingProfileData?.first_name && (
-                  <Text style={profileModal.username}>@{viewingProfile}</Text>
-                )}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                {viewingProfileData?.photo_url
+                  ? <Image
+                      source={{ uri: `${API_BASE}${viewingProfileData.photo_url}` }}
+                      style={editStyles.avatarSmall}
+                    />
+                  : <View style={editStyles.avatarPlaceholderSmall}>
+                      <Text style={{ color: '#FDB913', fontWeight: 'bold', fontSize: 16 }}>
+                        {viewingProfile?.[0]?.toUpperCase()}
+                      </Text>
+                    </View>
+                }
+                <View>
+                  <Text style={profileModal.name}>
+                    {viewingProfileData?.first_name && viewingProfileData?.last_name
+                      ? `${viewingProfileData.first_name} ${viewingProfileData.last_name}`
+                      : viewingProfile}
+                  </Text>
+                  {viewingProfileData?.first_name && (
+                    <Text style={profileModal.username}>@{viewingProfile}</Text>
+                  )}
+                </View>
               </View>
               <TouchableOpacity onPress={() => setViewingProfile(null)}>
                 <Text style={profileModal.close}>Close</Text>
@@ -892,7 +1027,7 @@ export default function App() {
         {/* ── POUR TAB ── */}
         {activeTab === 'camera' && (
           <>
-            <Text style={styles.greeting}>Hey {firstName || username} 🍺</Text>
+            <Text style={styles.greeting}>Hey {firstName || username}</Text>
             {average && (
               <View style={styles.avgBox}>
                 <Text style={styles.avgLabel}>YOUR AVERAGE G SCORE</Text>
@@ -902,10 +1037,10 @@ export default function App() {
             {pourMode === 'idle' && !loading && (
               <View style={{ width: '100%', gap: 12, marginBottom: 24 }}>
                 <TouchableOpacity style={styles.button} onPress={startRatingPour}>
-                  <Text style={styles.buttonText}>📸  Rate a Pint</Text>
+                  <Text style={styles.buttonText}>Rate a Pint</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.outlineButton} onPress={startSplitPour}>
-                  <Text style={styles.outlineButtonText}>🎯  Measure Split the G</Text>
+                  <Text style={styles.outlineButtonText}>Measure Split the G</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -949,8 +1084,10 @@ export default function App() {
                     />
                     {result.measurement_method && (
                       <Text style={styles.methodBadge}>
-                        {result.measurement_method === 'opencv+homography'
+                        {result.measurement_method === 'opencv'
                           ? 'Measured with OpenCV'
+                          : result.measurement_method === 'opencv+ai'
+                          ? 'OpenCV + AI'
                           : 'Measured with AI'}
                       </Text>
                     )}
@@ -1187,6 +1324,27 @@ export default function App() {
         {activeTab === 'profile' && (
           <>
             <View style={styles.profileHeader}>
+              {/* Avatar with edit badge */}
+              <TouchableOpacity
+                style={{ marginBottom: 12 }}
+                onPress={() => {
+                  setEditFirstName(profile?.first_name || firstName);
+                  setEditLastName(profile?.last_name || lastName);
+                  setEditModalVisible(true);
+                }}>
+                {avatarUrl
+                  ? <Image source={{ uri: avatarUrl }} style={editStyles.avatar} />
+                  : <View style={editStyles.avatarPlaceholder}>
+                      <Text style={editStyles.avatarInitialSmall}>
+                        {firstName?.[0]?.toUpperCase() || username?.[0]?.toUpperCase() || '?'}
+                      </Text>
+                    </View>
+                }
+                <View style={editStyles.editBadge}>
+                  <Text style={{ fontSize: 11 }}>✏️</Text>
+                </View>
+              </TouchableOpacity>
+
               <Text style={styles.profileName}>
                 {profile?.first_name && profile?.last_name
                   ? `${profile.first_name} ${profile.last_name}`
@@ -1196,7 +1354,18 @@ export default function App() {
               <Text style={styles.profileJoined}>
                 Joined {profile?.created_at?.slice(0, 10) || 'today'}
               </Text>
+
+              <TouchableOpacity
+                style={editStyles.editProfileBtn}
+                onPress={() => {
+                  setEditFirstName(profile?.first_name || firstName);
+                  setEditLastName(profile?.last_name || lastName);
+                  setEditModalVisible(true);
+                }}>
+                <Text style={editStyles.editProfileBtnText}>Edit Profile</Text>
+              </TouchableOpacity>
             </View>
+
             {profile && (
               <View style={styles.statsGrid}>
                 <View style={styles.statBox}>
@@ -1368,9 +1537,7 @@ const styles = StyleSheet.create({
     borderRadius: 10, padding: 14, fontSize: 16,
     borderWidth: 1, borderColor: '#333', marginBottom: 16
   },
-  nameRow: {
-    flexDirection: 'row', width: '100%', marginBottom: 0,
-  },
+  nameRow: { flexDirection: 'row', width: '100%', marginBottom: 0 },
   passwordRow: {
     flexDirection: 'row', width: '100%', alignItems: 'center',
     marginBottom: 16, gap: 8,
@@ -1498,6 +1665,65 @@ const styles = StyleSheet.create({
   selectedBarClose: { color: '#888', fontSize: 18, paddingLeft: 12 },
   selectedBarStats: { color: '#aaa', fontSize: 13, marginTop: 2 },
   selectedBarScore: { color: '#555', fontSize: 12, marginTop: 4 },
+});
+
+const editStyles = StyleSheet.create({
+  avatar: {
+    width: 96, height: 96, borderRadius: 48,
+    borderWidth: 3, borderColor: '#FDB913',
+  },
+  avatarPlaceholder: {
+    width: 96, height: 96, borderRadius: 48,
+    backgroundColor: '#1a1a1a', borderWidth: 3, borderColor: '#FDB913',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  avatarInitialSmall: {
+    color: '#FDB913', fontSize: 36, fontWeight: 'bold',
+  },
+  avatarLarge: {
+    width: 110, height: 110, borderRadius: 55,
+    borderWidth: 3, borderColor: '#FDB913',
+  },
+  avatarPlaceholderLarge: {
+    width: 110, height: 110, borderRadius: 55,
+    backgroundColor: '#1a1a1a', borderWidth: 3, borderColor: '#FDB913',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  avatarInitial: {
+    color: '#FDB913', fontSize: 44, fontWeight: 'bold',
+  },
+  avatarBtn: {
+    position: 'relative', marginBottom: 4,
+  },
+  cameraOverlay: {
+    position: 'absolute', bottom: 0, right: 0,
+    backgroundColor: '#FDB913', borderRadius: 14,
+    width: 28, height: 28, justifyContent: 'center', alignItems: 'center',
+  },
+  editBadge: {
+    position: 'absolute', bottom: 0, right: 0,
+    backgroundColor: '#FDB913', borderRadius: 12,
+    width: 24, height: 24, justifyContent: 'center', alignItems: 'center',
+  },
+  editProfileBtn: {
+    marginTop: 12, borderWidth: 1, borderColor: '#FDB913',
+    borderRadius: 20, paddingVertical: 6, paddingHorizontal: 20,
+  },
+  editProfileBtnText: {
+    color: '#FDB913', fontSize: 14, fontWeight: 'bold',
+  },
+  usernameNote: {
+    color: '#555', fontSize: 13, marginBottom: 20, alignSelf: 'flex-start',
+  },
+  avatarSmall: {
+    width: 44, height: 44, borderRadius: 22,
+    borderWidth: 2, borderColor: '#FDB913',
+  },
+  avatarPlaceholderSmall: {
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: '#1a1a1a', borderWidth: 2, borderColor: '#FDB913',
+    justifyContent: 'center', alignItems: 'center',
+  },
 });
 
 const bottomNav = StyleSheet.create({
