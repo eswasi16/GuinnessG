@@ -98,8 +98,20 @@ const BottomTabBar = ({ activeTab, onTabPress }) => {
 // --- Main App ---
 export default function App() {
   const [screen, setScreen] = useState('login');
+  const [authScreen, setAuthScreen] = useState('login'); // 'login' | 'signup' | 'forgot'
+  const [authLoading, setAuthLoading] = useState(false);
+
   const [username, setUsername] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
   const [usernameInput, setUsernameInput] = useState('');
+  const [emailInput, setEmailInput] = useState('');
+  const [passwordInput, setPasswordInput] = useState('');
+  const [firstNameInput, setFirstNameInput] = useState('');
+  const [lastNameInput, setLastNameInput] = useState('');
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+
   const [profile, setProfile] = useState(null);
   const [profilePours, setProfilePours] = useState([]);
   const [freshPhotoUri, setFreshPhotoUri] = useState(null);
@@ -107,7 +119,6 @@ export default function App() {
   const [result, setResult] = useState(null);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [profileLoading, setProfileLoading] = useState(false);
   const [leaderboard, setLeaderboard] = useState([]);
   const [bars, setBars] = useState([]);
   const [activeTab, setActiveTab] = useState('camera');
@@ -135,17 +146,24 @@ export default function App() {
   const [viewingProfilePours, setViewingProfilePours] = useState([]);
 
   useEffect(() => {
-    AsyncStorage.getItem('username').then(u => {
-      if (u) {
-        setUsername(u);
-        loadProfile(u);
-        loadProfilePours(u);
-        loadHistory(u);
-        fetchLeaderboard();
-        fetchBars();
-        loadFriends(u);
-        loadFriendFeed(u);
-        setScreen('main');
+    AsyncStorage.getItem('token').then(async token => {
+      if (token) {
+        const storedUsername = await AsyncStorage.getItem('username');
+        const storedFirst = await AsyncStorage.getItem('firstName');
+        const storedLast = await AsyncStorage.getItem('lastName');
+        if (storedUsername) {
+          setUsername(storedUsername);
+          setFirstName(storedFirst || '');
+          setLastName(storedLast || '');
+          loadProfile(storedUsername);
+          loadProfilePours(storedUsername);
+          loadHistory(storedUsername);
+          fetchLeaderboard();
+          fetchBars();
+          loadFriends(storedUsername);
+          loadFriendFeed(storedUsername);
+          setScreen('main');
+        }
       }
     });
   }, []);
@@ -168,6 +186,118 @@ export default function App() {
     };
     load();
   }, [viewingProfile]);
+
+  const completeLogin = async (token, name, first, last) => {
+    await AsyncStorage.setItem('token', token);
+    await AsyncStorage.setItem('username', name);
+    await AsyncStorage.setItem('firstName', first || '');
+    await AsyncStorage.setItem('lastName', last || '');
+    setUsername(name);
+    setFirstName(first || '');
+    setLastName(last || '');
+    await loadProfile(name);
+    await loadProfilePours(name);
+    await loadHistory(name);
+    await fetchLeaderboard();
+    await fetchBars();
+    await loadFriends(name);
+    await loadFriendFeed(name);
+    setScreen('main');
+    setAuthLoading(false);
+  };
+
+  const handleLogin = async () => {
+    if (!usernameInput.trim() || !passwordInput) {
+      Alert.alert('Missing Fields', 'Enter your username and password.');
+      return;
+    }
+    setAuthLoading(true);
+    try {
+      const { data } = await axios.post(`${API_BASE}/auth/login`, {
+        username: usernameInput.trim(),
+        password: passwordInput,
+      });
+      if (data.error) {
+        Alert.alert('Login Failed', data.error);
+        setAuthLoading(false);
+        return;
+      }
+      await completeLogin(data.token, data.username, data.first_name, data.last_name);
+    } catch (e) {
+      Alert.alert('Error', 'Could not connect to server.');
+      setAuthLoading(false);
+    }
+  };
+
+  const handleSignup = async () => {
+    if (!firstNameInput.trim() || !lastNameInput.trim() || !usernameInput.trim() ||
+        !emailInput.trim() || !passwordInput) {
+      Alert.alert('Missing Fields', 'Please fill in all fields.');
+      return;
+    }
+    setAuthLoading(true);
+    try {
+      const { data } = await axios.post(`${API_BASE}/auth/signup`, {
+        first_name: firstNameInput.trim(),
+        last_name: lastNameInput.trim(),
+        username: usernameInput.trim(),
+        email: emailInput.trim().toLowerCase(),
+        password: passwordInput,
+      });
+      if (data.error) {
+        Alert.alert('Sign Up Failed', data.error);
+        setAuthLoading(false);
+        return;
+      }
+      await completeLogin(data.token, data.username, data.first_name, data.last_name);
+    } catch (e) {
+      Alert.alert('Error', 'Could not connect to server.');
+      setAuthLoading(false);
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    if (!forgotEmail.trim()) {
+      Alert.alert('Email Required', 'Enter your email address.');
+      return;
+    }
+    setAuthLoading(true);
+    try {
+      const { data } = await axios.post(`${API_BASE}/auth/forgot-password`, {
+        email: forgotEmail.trim().toLowerCase(),
+      });
+      Alert.alert('Check Your Email', data.message);
+      setAuthScreen('login');
+      setForgotEmail('');
+    } catch (e) {
+      Alert.alert('Error', 'Could not connect to server.');
+    }
+    setAuthLoading(false);
+  };
+
+  const handleLogout = () => {
+    Alert.alert('Log Out', 'Are you sure?', [
+      { text: 'Cancel' },
+      {
+        text: 'Log Out', onPress: async () => {
+          await AsyncStorage.removeItem('token');
+          await AsyncStorage.removeItem('username');
+          await AsyncStorage.removeItem('firstName');
+          await AsyncStorage.removeItem('lastName');
+          setUsername(''); setFirstName(''); setLastName('');
+          setProfile(null); setProfilePours([]);
+          setHistory([]); setResult(null); setSplitImage(null);
+          setFreshPhotoUri(null); setUsernameInput('');
+          setPasswordInput(''); setEmailInput('');
+          setFirstNameInput(''); setLastNameInput('');
+          setPourMode('idle'); setFriendFeed([]);
+          setFriends({ following: [], followers: [] });
+          setAuthScreen('login');
+          setScreen('login');
+        }
+      }
+    ]);
+  };
 
   const loadProfile = async (name) => {
     try {
@@ -226,47 +356,6 @@ export default function App() {
       setUserResults(prev => prev.map(u => u.username === target ? { ...u, is_following: 0 } : u));
     } catch (e) { console.log('Unfollow failed:', e); }
     setFriendsLoading(false);
-  };
-
-  const handleLogin = async () => {
-    if (!usernameInput.trim()) return;
-    setProfileLoading(true);
-    try {
-      const { data } = await axios.post(`${API_BASE}/profile`, { username: usernameInput.trim() });
-      if (data.error) { Alert.alert('Error', data.error); setProfileLoading(false); return; }
-      const name = data.username;
-      await AsyncStorage.setItem('username', name);
-      setUsername(name);
-      await loadProfile(name);
-      await loadProfilePours(name);
-      await loadHistory(name);
-      await fetchLeaderboard();
-      await fetchBars();
-      await loadFriends(name);
-      await loadFriendFeed(name);
-      Alert.alert(data.status === 'created' ? 'Welcome!' : 'Welcome Back!', data.message);
-      setScreen('main');
-    } catch (e) {
-      Alert.alert('Error', 'Could not connect to server.');
-    }
-    setProfileLoading(false);
-  };
-
-  const handleLogout = () => {
-    Alert.alert('Log Out', 'Are you sure?', [
-      { text: 'Cancel' },
-      {
-        text: 'Log Out', onPress: async () => {
-          await AsyncStorage.removeItem('username');
-          setUsername(''); setProfile(null); setProfilePours([]);
-          setHistory([]); setResult(null); setSplitImage(null);
-          setFreshPhotoUri(null); setUsernameInput('');
-          setPourMode('idle'); setFriendFeed([]);
-          setFriends({ following: [], followers: [] });
-          setScreen('login');
-        }
-      }
-    ]);
   };
 
   const loadHistory = async (name) => {
@@ -480,38 +569,178 @@ export default function App() {
     if (key === 'friends') { loadFriends(username); loadFriendFeed(username); }
   };
 
-  // --- Login Screen ---
+  // ── LOGIN SCREEN ──────────────────────────────────────────────────────────
   if (screen === 'login') {
     return (
-      <View style={styles.loginContainer}>
+      <ScrollView
+        contentContainerStyle={styles.loginContainer}
+        keyboardShouldPersistTaps="handled"
+      >
         <Text style={styles.title}>Split the G</Text>
         <Text style={styles.loginSubtitle}>
           Track your pours, rate your pints, and compete with friends
         </Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Enter your name..."
-          placeholderTextColor="#555"
-          value={usernameInput}
-          onChangeText={setUsernameInput}
-          autoCapitalize="words"
-          onSubmitEditing={handleLogin}
-          returnKeyType="go"
-        />
-        <TouchableOpacity
-          style={[styles.button, (!usernameInput.trim() || profileLoading) && { opacity: 0.4 }]}
-          disabled={!usernameInput.trim() || profileLoading}
-          onPress={handleLogin}>
-          {profileLoading
-            ? <ActivityIndicator color="#000" />
-            : <Text style={styles.buttonText}>Let's Pour</Text>}
-        </TouchableOpacity>
-        <Text style={styles.loginNote}>No password needed — just pick a unique name!</Text>
-      </View>
+
+        {/* ── LOG IN ── */}
+        {authScreen === 'login' && (
+          <>
+            <TextInput
+              style={styles.input}
+              placeholder="Username"
+              placeholderTextColor="#555"
+              value={usernameInput}
+              onChangeText={setUsernameInput}
+              autoCapitalize="none"
+            />
+            <View style={styles.passwordRow}>
+              <TextInput
+                style={[styles.input, { flex: 1, marginBottom: 0 }]}
+                placeholder="Password"
+                placeholderTextColor="#555"
+                value={passwordInput}
+                onChangeText={setPasswordInput}
+                secureTextEntry={!showPassword}
+              />
+              <TouchableOpacity
+                style={styles.showPasswordBtn}
+                onPress={() => setShowPassword(!showPassword)}>
+                <Text style={styles.showPasswordText}>{showPassword ? 'Hide' : 'Show'}</Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              style={[styles.button, { width: '100%', alignItems: 'center', marginTop: 16 },
+                authLoading && { opacity: 0.4 }]}
+              disabled={authLoading}
+              onPress={handleLogin}>
+              {authLoading
+                ? <ActivityIndicator color="#000" />
+                : <Text style={styles.buttonText}>Log In</Text>}
+            </TouchableOpacity>
+            <TouchableOpacity style={{ marginTop: 16 }} onPress={() => setAuthScreen('forgot')}>
+              <Text style={styles.authLinkText}>Forgot password?</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={{ marginTop: 12 }} onPress={() => {
+              setAuthScreen('signup');
+              setUsernameInput('');
+              setPasswordInput('');
+            }}>
+              <Text style={styles.authSwitchText}>
+                No account? <Text style={{ color: '#FDB913' }}>Sign up</Text>
+              </Text>
+            </TouchableOpacity>
+          </>
+        )}
+
+        {/* ── SIGN UP ── */}
+        {authScreen === 'signup' && (
+          <>
+            <View style={styles.nameRow}>
+              <TextInput
+                style={[styles.input, { flex: 1, marginRight: 8 }]}
+                placeholder="First name"
+                placeholderTextColor="#555"
+                value={firstNameInput}
+                onChangeText={setFirstNameInput}
+                autoCapitalize="words"
+              />
+              <TextInput
+                style={[styles.input, { flex: 1 }]}
+                placeholder="Last name"
+                placeholderTextColor="#555"
+                value={lastNameInput}
+                onChangeText={setLastNameInput}
+                autoCapitalize="words"
+              />
+            </View>
+            <TextInput
+              style={styles.input}
+              placeholder="Username"
+              placeholderTextColor="#555"
+              value={usernameInput}
+              onChangeText={setUsernameInput}
+              autoCapitalize="none"
+            />
+            <TextInput
+              style={styles.input}
+              placeholder="Email address"
+              placeholderTextColor="#555"
+              value={emailInput}
+              onChangeText={setEmailInput}
+              keyboardType="email-address"
+              autoCapitalize="none"
+            />
+            <View style={styles.passwordRow}>
+              <TextInput
+                style={[styles.input, { flex: 1, marginBottom: 0 }]}
+                placeholder="Password (min 8 characters)"
+                placeholderTextColor="#555"
+                value={passwordInput}
+                onChangeText={setPasswordInput}
+                secureTextEntry={!showPassword}
+              />
+              <TouchableOpacity
+                style={styles.showPasswordBtn}
+                onPress={() => setShowPassword(!showPassword)}>
+                <Text style={styles.showPasswordText}>{showPassword ? 'Hide' : 'Show'}</Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              style={[styles.button, { width: '100%', alignItems: 'center', marginTop: 16 },
+                authLoading && { opacity: 0.4 }]}
+              disabled={authLoading}
+              onPress={handleSignup}>
+              {authLoading
+                ? <ActivityIndicator color="#000" />
+                : <Text style={styles.buttonText}>Create Account</Text>}
+            </TouchableOpacity>
+            <TouchableOpacity style={{ marginTop: 16 }} onPress={() => {
+              setAuthScreen('login');
+              setFirstNameInput('');
+              setLastNameInput('');
+              setEmailInput('');
+              setPasswordInput('');
+            }}>
+              <Text style={styles.authSwitchText}>
+                Already have an account? <Text style={{ color: '#FDB913' }}>Log in</Text>
+              </Text>
+            </TouchableOpacity>
+          </>
+        )}
+
+        {/* ── FORGOT PASSWORD ── */}
+        {authScreen === 'forgot' && (
+          <>
+            <Text style={styles.forgotInfo}>
+              Enter your email and we'll send you a link to reset your password.
+            </Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Email address"
+              placeholderTextColor="#555"
+              value={forgotEmail}
+              onChangeText={setForgotEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+            />
+            <TouchableOpacity
+              style={[styles.button, { width: '100%', alignItems: 'center' },
+                authLoading && { opacity: 0.4 }]}
+              disabled={authLoading}
+              onPress={handleForgotPassword}>
+              {authLoading
+                ? <ActivityIndicator color="#000" />
+                : <Text style={styles.buttonText}>Send Reset Link</Text>}
+            </TouchableOpacity>
+            <TouchableOpacity style={{ marginTop: 16 }} onPress={() => setAuthScreen('login')}>
+              <Text style={styles.authLinkText}>← Back to login</Text>
+            </TouchableOpacity>
+          </>
+        )}
+      </ScrollView>
     );
   }
 
-  // --- Main App ---
+  // ── MAIN APP ──────────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#0a0a0a' }}>
 
@@ -594,7 +823,16 @@ export default function App() {
         <View style={profileModal.overlay}>
           <View style={profileModal.sheet}>
             <View style={profileModal.headerRow}>
-              <Text style={profileModal.name}>{viewingProfile}</Text>
+              <View>
+                <Text style={profileModal.name}>
+                  {viewingProfileData?.first_name && viewingProfileData?.last_name
+                    ? `${viewingProfileData.first_name} ${viewingProfileData.last_name}`
+                    : viewingProfile}
+                </Text>
+                {viewingProfileData?.first_name && (
+                  <Text style={profileModal.username}>@{viewingProfile}</Text>
+                )}
+              </View>
               <TouchableOpacity onPress={() => setViewingProfile(null)}>
                 <Text style={profileModal.close}>Close</Text>
               </TouchableOpacity>
@@ -654,7 +892,7 @@ export default function App() {
         {/* ── POUR TAB ── */}
         {activeTab === 'camera' && (
           <>
-            <Text style={styles.greeting}>Hey {username}</Text>
+            <Text style={styles.greeting}>Hey {firstName || username} 🍺</Text>
             {average && (
               <View style={styles.avgBox}>
                 <Text style={styles.avgLabel}>YOUR AVERAGE G SCORE</Text>
@@ -765,7 +1003,6 @@ export default function App() {
           <>
             <Text style={styles.leaderboardTitle}>Bar Rankings</Text>
             <Text style={styles.leaderboardSub}>Rated by the Split the G community</Text>
-
             {bars.some(b => b.lat && b.lng) && (
               <MapView
                 style={styles.fullMap}
@@ -791,7 +1028,6 @@ export default function App() {
                 ))}
               </MapView>
             )}
-
             {selectedBar && (
               <View style={styles.selectedBarCard}>
                 <View style={styles.selectedBarHeader}>
@@ -809,7 +1045,6 @@ export default function App() {
                 </Text>
               </View>
             )}
-
             {bars.length === 0 && (
               <Text style={styles.emptyText}>No bars rated yet — tag a bar on your next pour!</Text>
             )}
@@ -948,11 +1183,16 @@ export default function App() {
           </>
         )}
 
-        {/* ── PROFILE TAB ── */}
+        {/* ── ME TAB ── */}
         {activeTab === 'profile' && (
           <>
             <View style={styles.profileHeader}>
-              <Text style={styles.profileName}>{username}</Text>
+              <Text style={styles.profileName}>
+                {profile?.first_name && profile?.last_name
+                  ? `${profile.first_name} ${profile.last_name}`
+                  : username}
+              </Text>
+              <Text style={styles.profileUsername}>@{username}</Text>
               <Text style={styles.profileJoined}>
                 Joined {profile?.created_at?.slice(0, 10) || 'today'}
               </Text>
@@ -1055,12 +1295,11 @@ export default function App() {
 const styles = StyleSheet.create({
   content: { padding: 24, alignItems: 'center', paddingBottom: 20 },
   loginContainer: {
-    flex: 1, backgroundColor: '#0a0a0a',
+    flexGrow: 1, backgroundColor: '#0a0a0a',
     alignItems: 'center', justifyContent: 'center', padding: 32
   },
   title: { fontSize: 32, fontWeight: 'bold', color: '#FDB913', marginBottom: 8 },
   loginSubtitle: { color: '#888', fontSize: 15, textAlign: 'center', marginBottom: 32, lineHeight: 22 },
-  loginNote: { color: '#444', fontSize: 13, marginTop: 16, textAlign: 'center' },
   header: {
     flexDirection: 'row', justifyContent: 'center',
     alignItems: 'center', width: '100%', marginTop: 12, marginBottom: 8
@@ -1129,6 +1368,25 @@ const styles = StyleSheet.create({
     borderRadius: 10, padding: 14, fontSize: 16,
     borderWidth: 1, borderColor: '#333', marginBottom: 16
   },
+  nameRow: {
+    flexDirection: 'row', width: '100%', marginBottom: 0,
+  },
+  passwordRow: {
+    flexDirection: 'row', width: '100%', alignItems: 'center',
+    marginBottom: 16, gap: 8,
+  },
+  showPasswordBtn: {
+    paddingHorizontal: 12, paddingVertical: 14,
+    backgroundColor: '#1a1a1a', borderRadius: 10,
+    borderWidth: 1, borderColor: '#333',
+  },
+  showPasswordText: { color: '#FDB913', fontSize: 14 },
+  authSwitchText: { color: '#888', fontSize: 15 },
+  authLinkText: { color: '#FDB913', fontSize: 15 },
+  forgotInfo: {
+    color: '#aaa', fontSize: 15, textAlign: 'center',
+    marginBottom: 24, lineHeight: 22,
+  },
   suggestionsBox: {
     width: '100%', backgroundColor: '#1a1a1a',
     borderRadius: 10, borderWidth: 1, borderColor: '#333',
@@ -1181,7 +1439,8 @@ const styles = StyleSheet.create({
   feedScore: { color: '#aaa', fontSize: 13, marginTop: 2 },
   feedDate: { color: '#555', fontSize: 11, marginTop: 2 },
   profileHeader: { alignItems: 'center', marginBottom: 24, width: '100%' },
-  profileName: { color: '#fff', fontSize: 24, fontWeight: 'bold' },
+  profileName: { color: '#fff', fontSize: 26, fontWeight: 'bold' },
+  profileUsername: { color: '#FDB913', fontSize: 14, marginTop: 4 },
   profileJoined: { color: '#888', fontSize: 13, marginTop: 4 },
   statsGrid: {
     flexDirection: 'row', flexWrap: 'wrap',
@@ -1283,6 +1542,7 @@ const profileModal = StyleSheet.create({
     alignItems: 'center', width: '100%', marginBottom: 20
   },
   name: { color: '#FDB913', fontSize: 22, fontWeight: 'bold' },
+  username: { color: '#888', fontSize: 13, marginTop: 2 },
   close: { color: '#888', fontSize: 16 },
 });
 

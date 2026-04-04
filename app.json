@@ -12,14 +12,24 @@
       "backgroundColor": "#0a0a0a"
     },
     "ios": {
-      "supportsTablet": false,
-      "bundleIdentifier": "com.yourname.splittheg",
-      "infoPlist": {
-        "NSCameraUsageDescription": "Used to photograph your Guinness pint to measure your Split the G score."
-      }
-    },
+  "supportsTablet": false,
+  "bundleIdentifier": "com.eswasi16.splittheg",
+  "config": {
+    "googleMapsApiKey": "AIzaSyA6Gx9CLrp7tGHR63ltCkd0-tRG6LmQs1c"
+  },
+  "infoPlist": {
+    "NSCameraUsageDescription": "Used to photograph your Guinness pint to measure your Split the G score.",
+    "NSLocationWhenInUseUsageDescription": "Used to find nearby bars and tag your Guinness pour location.",
+    "ITSAppUsesNonExemptEncryption": false
+  }
+},
     "android": {
-      "package": "com.yourname.splittheg"
+      "package": "com.eswasi16.splittheg",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyA6Gx9CLrp7tGHR63ltCkd0-tRG6LmQs1c"
+        }
+      }
     },
     "extra": {
       "eas": {
