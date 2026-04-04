@@ -14,7 +14,8 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.eswasi16.splittheg",
-      "buildNumber": "6",
+      "buildNumber": "8",
+      "backgroundColor": "#0a0a0a",
       "config": {
         "googleMapsApiKey": "AIzaSyA6Gx9CLrp7tGHR63ltCkd0-tRG6LmQs1c"
       },
