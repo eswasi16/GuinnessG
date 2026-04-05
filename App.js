@@ -95,6 +95,90 @@ const BottomTabBar = ({ activeTab, onTabPress }) => {
   );
 };
 
+// --- Camera ---
+import { CameraView, useCameraPermissions } from 'expo-camera';
+
+const CameraScreen = ({ onCapture, onCancel }) => {
+  const [permission, requestPermission] = useCameraPermissions();
+  const cameraRef = React.useRef(null);
+  const [capturing, setCapturing] = React.useState(false);
+
+  if (!permission) return <View style={camStyles.container} />;
+
+  if (!permission.granted) {
+    return (
+      <View style={camStyles.container}>
+        <Text style={camStyles.permText}>Camera access is needed to analyze your pour.</Text>
+        <TouchableOpacity style={styles.button} onPress={requestPermission}>
+          <Text style={styles.buttonText}>Grant Permission</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  const handleCapture = async () => {
+    if (!cameraRef.current || capturing) return;
+    setCapturing(true);
+    try {
+      const photo = await cameraRef.current.takePictureAsync({ quality: 0.8 });
+      onCapture(photo.uri);
+    } catch (e) {
+      Alert.alert('Error', 'Could not take photo.');
+    }
+    setCapturing(false);
+  };
+
+  return (
+    <View style={camStyles.container}>
+      <CameraView style={StyleSheet.absoluteFill} ref={cameraRef} facing="back" />
+
+      {/* Dimmed overlay with glass cutout */}
+      <View style={camStyles.overlay}>
+        {/* Top dim */}
+        <View style={camStyles.dimTop} />
+
+        {/* Middle row: dim | glass window | dim */}
+        <View style={camStyles.middleRow}>
+          <View style={camStyles.dimSide} />
+          <View style={camStyles.glassWindow}>
+            {/* Corner markers */}
+            <View style={[camStyles.corner, camStyles.cornerTL]} />
+            <View style={[camStyles.corner, camStyles.cornerTR]} />
+            <View style={[camStyles.corner, camStyles.cornerBL]} />
+            <View style={[camStyles.corner, camStyles.cornerBR]} />
+            {/* Center guide line */}
+            <View style={camStyles.centerLine} />
+            <Text style={camStyles.guideText}>Align the G with the beer line</Text>
+          </View>
+          <View style={camStyles.dimSide} />
+        </View>
+
+        {/* Bottom dim */}
+        <View style={camStyles.dimBottom} />
+      </View>
+
+      {/* Tip text */}
+      <View style={camStyles.tipBox}>
+        <Text style={camStyles.tipText}>📐 Hold phone straight · Show full glass · Include the G label</Text>
+      </View>
+
+      {/* Buttons */}
+      <View style={camStyles.btnRow}>
+        <TouchableOpacity style={camStyles.cancelBtn} onPress={onCancel}>
+          <Text style={camStyles.cancelText}>Cancel</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[camStyles.captureBtn, capturing && { opacity: 0.5 }]}
+          onPress={handleCapture}
+          disabled={capturing}>
+          <View style={camStyles.captureInner} />
+        </TouchableOpacity>
+        <View style={{ width: 70 }} />
+      </View>
+    </View>
+  );
+};
+
 // --- Main App ---
 export default function App() {
   const [screen, setScreen] = useState('login');
@@ -812,9 +896,19 @@ export default function App() {
 
   // ── MAIN APP ──────────────────────────────────────────────────────────────
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: '#0a0a0a' }}>
+  <SafeAreaView style={{ flex: 1, backgroundColor: '#0a0a0a' }}>
 
-      {/* ── Edit Profile Modal ── */}
+    {/* ── Camera Screen ── */}
+    {showCamera && (
+      <View style={StyleSheet.absoluteFill}>
+        <CameraScreen
+          onCapture={handleCameraCapture}
+          onCancel={() => setShowCamera(false)}
+        />
+      </View>
+    )}
+
+    {/* ── Edit Profile Modal ── */}
       <Modal visible={editModalVisible} transparent animationType="slide"
         onRequestClose={() => setEditModalVisible(false)}>
         <View style={modal.overlay}>
@@ -1035,7 +1129,7 @@ export default function App() {
         {/* ── POUR TAB ── */}
         {activeTab === 'camera' && (
         <>
-          <Text style={styles.greeting}>Hey {firstName || username} 🍺</Text>
+          <Text style={styles.greeting}>Hey {firstName || username}</Text>
 
           {/* ── GLOBAL COUNTER ── */}
           {globalStats && (
@@ -1043,7 +1137,7 @@ export default function App() {
               <Text style={styles.globalCountNum}>
                 {globalStats.total_pours.toLocaleString()}
               </Text>
-              <Text style={styles.globalCountLabel}>SPLITS WORLDWIDE 🌍</Text>
+              <Text style={styles.globalCountLabel}>SPLITS WORLDWIDE</Text>
             </View>
           )}
 
@@ -1842,4 +1936,110 @@ const indicator = StyleSheet.create({
   legendItem: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
   legendDot: { width: 10, height: 10, borderRadius: 5, marginRight: 8 },
   legendText: { color: '#888', fontSize: 12 },
+});
+
+const camStyles = StyleSheet.create({
+  container: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#000',
+    justifyContent: 'flex-end',
+  },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    flexDirection: 'column',
+  },
+  dimTop: {
+    flex: 2,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  middleRow: {
+    flex: 5,
+    flexDirection: 'row',
+  },
+  dimSide: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  glassWindow: {
+    flex: 2.2,
+    borderWidth: 2,
+    borderColor: '#FDB913',
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  corner: {
+    position: 'absolute',
+    width: 18,
+    height: 18,
+    borderColor: '#FDB913',
+    borderWidth: 3,
+  },
+  cornerTL: { top: -1, left: -1, borderRightWidth: 0, borderBottomWidth: 0, borderTopLeftRadius: 14 },
+  cornerTR: { top: -1, right: -1, borderLeftWidth: 0, borderBottomWidth: 0, borderTopRightRadius: 14 },
+  cornerBL: { bottom: -1, left: -1, borderRightWidth: 0, borderTopWidth: 0, borderBottomLeftRadius: 14 },
+  cornerBR: { bottom: -1, right: -1, borderLeftWidth: 0, borderTopWidth: 0, borderBottomRightRadius: 14 },
+  centerLine: {
+    position: 'absolute',
+    left: '10%',
+    right: '10%',
+    height: 1,
+    backgroundColor: 'rgba(253,185,19,0.4)',
+    top: '50%',
+  },
+  guideText: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 11,
+    textAlign: 'center',
+    position: 'absolute',
+    bottom: 8,
+    left: 4,
+    right: 4,
+  },
+  dimBottom: {
+    flex: 2,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  tipBox: {
+    position: 'absolute',
+    top: '14%',
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+  },
+  tipText: {
+    color: 'rgba(255,255,255,0.75)',
+    fontSize: 12,
+    textAlign: 'center',
+    paddingHorizontal: 20,
+  },
+  btnRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    paddingBottom: 48,
+    paddingTop: 16,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
+  captureBtn: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    borderWidth: 4,
+    borderColor: '#fff',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  captureInner: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#fff',
+  },
+  cancelBtn: { width: 70, alignItems: 'flex-start' },
+  cancelText: { color: '#fff', fontSize: 16 },
+  permText: { color: '#fff', textAlign: 'center', marginBottom: 24, padding: 32 },
 });
