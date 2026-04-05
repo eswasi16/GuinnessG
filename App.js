@@ -208,6 +208,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('camera');
   const [pourMode, setPourMode] = useState('idle');
   const [selectedBar, setSelectedBar] = useState(null);
+  const [showCamera, setShowCamera] = useState(false);
+  const [cameraMode, setCameraMode] = useState(null);
   const [globalStats, setGlobalStats] = useState(null);
 
   // Bar modal
