@@ -1255,6 +1255,11 @@ export default function App() {
                       beerLinePct={result.beer_line_pct}
                       distanceCm={result.distance_cm}
                     />
+                    {result && (
+                      <Text style={{ color: '#888', fontSize: 11, marginTop: 4 }}>
+                        Debug — G%: {result.g_midpoint_pct?.toFixed(1)} | Beer%: {result.beer_line_pct?.toFixed(1)}
+                      </Text>
+                    )}
                     {result.measurement_method && (
                       <Text style={styles.methodBadge}>
                         {result.measurement_method === 'opencv'
