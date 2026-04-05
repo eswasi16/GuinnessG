@@ -7,6 +7,7 @@ import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import MapView, { Marker } from 'react-native-maps';
 import axios from 'axios';
+import Svg, { Line, Circle, Text as SvgText } from 'react-native-svg';
 
 const API_BASE = 'https://guinness-g-api-production.up.railway.app';
 const API_URL = `${API_BASE}/analyze`;
@@ -24,39 +25,97 @@ const StarRating = ({ rating, onRate, size = 28 }) => (
 );
 
 // --- Visual Indicator ---
-const GVisualIndicator = ({ gMidpointPct, beerLinePct }) => {
-  const BAR_HEIGHT = 200;
-  const gPos = BAR_HEIGHT * (1 - gMidpointPct / 100);
-  const beerPos = BAR_HEIGHT * (1 - beerLinePct / 100);
-  const gHeight = BAR_HEIGHT * 0.08;
+const GOverlayImage = ({ imageUri, gMidpointPct, beerLinePct, distanceCm }) => {
+  const [imgSize, setImgSize] = React.useState({ width: 0, height: 0 });
+
+  const gY = imgSize.height * (1 - gMidpointPct / 100);
+  const beerY = imgSize.height * (1 - beerLinePct / 100);
+
   return (
-    <View style={indicator.container}>
-      <Text style={indicator.label}>Glass Top</Text>
-      <View style={indicator.bar}>
-        <View style={[indicator.gZone, { top: gPos - gHeight, height: gHeight * 2 }]}>
-          <Text style={indicator.gLetter}>G</Text>
-        </View>
-        <View style={[indicator.perfectZone, { top: gPos - 4, height: 8 }]} />
-        <View style={[indicator.midLine, { top: gPos }]} />
-        <View style={[indicator.beerLine, { top: beerPos }]}>
-          <Text style={indicator.beerLabel}>beer line</Text>
-        </View>
-      </View>
-      <Text style={indicator.label}>Glass Bottom</Text>
-      <View style={indicator.legend}>
-        <View style={indicator.legendItem}>
-          <View style={[indicator.legendDot, { backgroundColor: '#FDB913' }]} />
-          <Text style={indicator.legendText}>G midpoint (target)</Text>
-        </View>
-        <View style={indicator.legendItem}>
-          <View style={[indicator.legendDot, { backgroundColor: '#4fc3f7' }]} />
-          <Text style={indicator.legendText}>Your beer line</Text>
-        </View>
-        <View style={indicator.legendItem}>
-          <View style={[indicator.legendDot, { backgroundColor: 'rgba(100,255,100,0.5)' }]} />
-          <Text style={indicator.legendText}>Perfect zone</Text>
-        </View>
-      </View>
+    <View
+      style={{ width: '100%', aspectRatio: 3 / 4, borderRadius: 12, overflow: 'hidden', marginBottom: 12 }}
+      onLayout={e => {
+        const { width, height } = e.nativeEvent.layout;
+        setImgSize({ width, height });
+      }}
+    >
+      <Image
+        source={{ uri: imageUri }}
+        style={{ width: '100%', height: '100%' }}
+        resizeMode="cover"
+      />
+
+      {imgSize.width > 0 && (
+        <Svg
+          style={StyleSheet.absoluteFill}
+          width={imgSize.width}
+          height={imgSize.height}
+        >
+          {/* G midpoint line — gold */}
+          <Line
+            x1={imgSize.width * 0.05}
+            y1={gY}
+            x2={imgSize.width * 0.95}
+            y2={gY}
+            stroke="#FDB913"
+            strokeWidth={2.5}
+            strokeDasharray="8,5"
+          />
+          <SvgText
+            x={imgSize.width * 0.06}
+            y={gY - 8}
+            fill="#FDB913"
+            fontSize="13"
+            fontWeight="bold"
+          >
+            G midpoint
+          </SvgText>
+
+          {/* Beer line — blue */}
+          <Line
+            x1={imgSize.width * 0.05}
+            y1={beerY}
+            x2={imgSize.width * 0.95}
+            y2={beerY}
+            stroke="#4fc3f7"
+            strokeWidth={2.5}
+            strokeDasharray="8,5"
+          />
+          <SvgText
+            x={imgSize.width * 0.06}
+            y={beerY - 8}
+            fill="#4fc3f7"
+            fontSize="13"
+            fontWeight="bold"
+          >
+            beer line
+          </SvgText>
+
+          {/* Distance indicator — vertical line between the two */}
+          <Line
+            x1={imgSize.width * 0.5}
+            y1={Math.min(gY, beerY)}
+            x2={imgSize.width * 0.5}
+            y2={Math.max(gY, beerY)}
+            stroke="rgba(255,255,255,0.5)"
+            strokeWidth={1.5}
+          />
+          {/* Distance label */}
+          <SvgText
+            x={imgSize.width * 0.52}
+            y={(gY + beerY) / 2 + 5}
+            fill="#fff"
+            fontSize="13"
+            fontWeight="bold"
+          >
+            {distanceCm === 0 ? 'PERFECT' : `${distanceCm?.toFixed(1)}cm`}
+          </SvgText>
+
+          {/* Dot markers */}
+          <Circle cx={imgSize.width * 0.5} cy={gY} r={5} fill="#FDB913" />
+          <Circle cx={imgSize.width * 0.5} cy={beerY} r={5} fill="#4fc3f7" />
+        </Svg>
+      )}
     </View>
   );
 };
@@ -1169,9 +1228,6 @@ export default function App() {
             )}
             {result && pourMode === 'result' && !loading && (
               <View style={styles.resultBox}>
-                {splitImage && (
-                  <Image source={{ uri: splitImage }} style={[styles.photoThumb, { marginBottom: 16 }]} />
-                )}
                 {!result.glass_detected && (
                   <Text style={styles.warn}>No Guinness detected. Try again!</Text>
                 )}
@@ -1193,9 +1249,11 @@ export default function App() {
                       Beer line: {result.beer_line_position?.replace(/_/g, ' ')}
                     </Text>
                     <Text style={styles.desc}>{result.description}</Text>
-                    <GVisualIndicator
+                    <GOverlayImage
+                      imageUri={splitImage}
                       gMidpointPct={result.g_midpoint_pct}
                       beerLinePct={result.beer_line_pct}
+                      distanceCm={result.distance_cm}
                     />
                     {result.measurement_method && (
                       <Text style={styles.methodBadge}>
