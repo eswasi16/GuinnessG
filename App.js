@@ -377,7 +377,8 @@ export default function App() {
       }
       await completeLogin(data.token, data.username, data.first_name, data.last_name, data.photo_url);
     } catch (e) {
-      Alert.alert('Error', 'Could not connect to server.');
+      console.error('Login error:', e.message, e.response?.data, e.response?.status);
+      Alert.alert('Error', e.message || 'Could not connect to server.');
       setAuthLoading(false);
     }
   };
