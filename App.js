@@ -7,9 +7,10 @@ import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import MapView, { Marker } from 'react-native-maps';
 import axios from 'axios';
-import Svg, { Line, Circle, Text as SvgText } from 'react-native-svg';
+import Svg, { Line, Circle, Text as SvgText, Rect } from 'react-native-svg';
 
 const API_BASE = 'https://guinness-g-api-production.up.railway.app';
+//const API_BASE = 'http://10.0.0.24';
 const API_URL = `${API_BASE}/analyze`;
 const GOOGLE_KEY = 'AIzaSyA6Gx9CLrp7tGHR63ltCkd0-tRG6LmQs1c';
 
@@ -25,95 +26,75 @@ const StarRating = ({ rating, onRate, size = 28 }) => (
 );
 
 // --- Visual Indicator ---
-const GOverlayImage = ({ imageUri, gMidpointPct, beerLinePct, distanceCm }) => {
-  const [imgSize, setImgSize] = React.useState({ width: 0, height: 0 });
+const GOverlayImage = ({ imageUri, gDetection, imageWidth, imageHeight, beerLinePct }) => {
+  const [displaySize, setDisplaySize] = React.useState({ width: 0, height: 0 });
+  const bbox = gDetection?.bbox;
+  const imageAspect = (imageWidth && imageHeight) ? imageWidth / imageHeight : 3 / 4;
 
-  const gY = imgSize.height * (1 - gMidpointPct / 100);
-  const beerY = imgSize.height * (1 - beerLinePct / 100);
+  const scaleX = displaySize.width / imageWidth;
+  const scaleY = displaySize.height / imageHeight;
+
+  // beerLinePct is % from bottom → convert to px from top in display coords
+  const beerLineY = beerLinePct != null
+    ? displaySize.height * (1 - beerLinePct / 100)
+    : null;
 
   return (
     <View
-      style={{ width: '100%', aspectRatio: 3 / 4, borderRadius: 12, overflow: 'hidden', marginBottom: 12 }}
+      style={{ width: '100%', aspectRatio: imageAspect, borderRadius: 12, overflow: 'hidden', marginBottom: 12 }}
       onLayout={e => {
         const { width, height } = e.nativeEvent.layout;
-        setImgSize({ width, height });
+        setDisplaySize({ width, height });
       }}
     >
-      <Image
-        source={{ uri: imageUri }}
-        style={{ width: '100%', height: '100%' }}
-        resizeMode="cover"
-      />
-
-      {imgSize.width > 0 && (
-        <Svg
-          style={StyleSheet.absoluteFill}
-          width={imgSize.width}
-          height={imgSize.height}
-        >
-          {/* G midpoint line — gold */}
-          <Line
-            x1={imgSize.width * 0.05}
-            y1={gY}
-            x2={imgSize.width * 0.95}
-            y2={gY}
-            stroke="#FDB913"
-            strokeWidth={2.5}
-            strokeDasharray="8,5"
-          />
-          <SvgText
-            x={imgSize.width * 0.06}
-            y={gY - 8}
-            fill="#FDB913"
-            fontSize="13"
-            fontWeight="bold"
-          >
-            G midpoint
-          </SvgText>
-
-          {/* Beer line — blue */}
-          <Line
-            x1={imgSize.width * 0.05}
-            y1={beerY}
-            x2={imgSize.width * 0.95}
-            y2={beerY}
-            stroke="#4fc3f7"
-            strokeWidth={2.5}
-            strokeDasharray="8,5"
-          />
-          <SvgText
-            x={imgSize.width * 0.06}
-            y={beerY - 8}
-            fill="#4fc3f7"
-            fontSize="13"
-            fontWeight="bold"
-          >
-            beer line
-          </SvgText>
-
-          {/* Distance indicator — vertical line between the two */}
-          <Line
-            x1={imgSize.width * 0.5}
-            y1={Math.min(gY, beerY)}
-            x2={imgSize.width * 0.5}
-            y2={Math.max(gY, beerY)}
-            stroke="rgba(255,255,255,0.5)"
-            strokeWidth={1.5}
-          />
-          {/* Distance label */}
-          <SvgText
-            x={imgSize.width * 0.52}
-            y={(gY + beerY) / 2 + 5}
-            fill="#fff"
-            fontSize="13"
-            fontWeight="bold"
-          >
-            {distanceCm === 0 ? 'PERFECT' : `${distanceCm?.toFixed(1)}cm`}
-          </SvgText>
-
-          {/* Dot markers */}
-          <Circle cx={imgSize.width * 0.5} cy={gY} r={5} fill="#FDB913" />
-          <Circle cx={imgSize.width * 0.5} cy={beerY} r={5} fill="#4fc3f7" />
+      <Image source={{ uri: imageUri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+      {displaySize.width > 0 && imageWidth > 0 && (
+        <Svg style={StyleSheet.absoluteFill} width={displaySize.width} height={displaySize.height}>
+          {/* Beer line */}
+          {beerLineY != null && (
+            <>
+              <Line
+                x1={0} y1={beerLineY}
+                x2={displaySize.width} y2={beerLineY}
+                stroke="#4fc3f7"
+                strokeWidth={2}
+                strokeDasharray="8,4"
+              />
+              <SvgText
+                x={8}
+                y={beerLineY - 6}
+                fill="#4fc3f7"
+                fontSize={11}
+                fontWeight="bold"
+              >
+                beer line
+              </SvgText>
+            </>
+          )}
+          {/* G bounding box */}
+          {bbox && (
+            <>
+              <Rect
+                x={bbox.x * scaleX}
+                y={bbox.y * scaleY}
+                width={bbox.w * scaleX}
+                height={bbox.h * scaleY}
+                stroke="#FDB913"
+                strokeWidth={2.5}
+                fill="transparent"
+                rx={4}
+              />
+              <SvgText
+                x={bbox.x * scaleX + 4}
+                y={bbox.y * scaleY - 6}
+                fill="#FDB913"
+                fontSize={12}
+                fontWeight="bold"
+              >
+                G
+              </SvgText>
+            </>
+          )}
         </Svg>
       )}
     </View>
@@ -1252,18 +1233,14 @@ export default function App() {
                     <Text style={styles.desc}>{result.description}</Text>
                     <GOverlayImage
                       imageUri={splitImage}
-                      gMidpointPct={result.g_midpoint_pct}
+                      gDetection={result.g_detection}
+                      imageWidth={result.image_width}
+                      imageHeight={result.image_height}
                       beerLinePct={result.beer_line_pct}
-                      distanceCm={result.distance_cm}
                     />
-                    {result && (
-                      <Text style={{ color: '#888', fontSize: 11, marginTop: 4 }}>
-                        Debug — G%: {result.g_midpoint_pct?.toFixed(1)} | Beer%: {result.beer_line_pct?.toFixed(1)}
-                      </Text>
-                    )}
                     {result.measurement_method && (
                       <Text style={styles.methodBadge}>
-                        {result.measurement_method === 'opencv'
+                        {result.measurement_method === 'opencv' || result.measurement_method === 'opencv-template'
                           ? 'Measured with OpenCV'
                           : result.measurement_method === 'opencv+ai'
                           ? 'OpenCV + AI'
